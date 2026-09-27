@@ -4,6 +4,8 @@
 
 针对 **CMP 170HX × 2（MCDM 模式）** 的显卡监控小工具。
 
+📖 英文版文档：[README.en.md](README.en.md)
+
 在 MCDM 模式下，基于 NVAPI 的工具（GPU-Z、LibreHardwareMonitor 等）**完全看不到显卡**。
 本工具走 **NVML 通道**（与 `nvidia-smi` 同源），稳定读取核心温度、HBM 存温、功耗、显存占用等指标，
 并能在驱动被卸载/重装（如解锁流程会反复拆装 NVIDIA 驱动）后自动重连恢复。
