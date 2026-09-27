@@ -6,6 +6,8 @@
 
 📖 英文版文档：[README.en.md](README.en.md)
 
+**直接下载 exe**：Releases 页的滚动预发布版 **[ci-latest](https://github.com/hongguifeng/cmp170hx-gpu-monitor/releases/tag/ci-latest)**，附件就是 CI 打包好的 `GPU-Monitor.exe`（免登录下载，每次推 `master` 自动覆盖）。
+
 在 MCDM 模式下，基于 NVAPI 的工具（GPU-Z、LibreHardwareMonitor 等）**完全看不到显卡**。
 本工具走 **NVML 通道**（与 `nvidia-smi` 同源），稳定读取核心温度、HBM 存温、功耗、显存占用等指标，
 并能在驱动被卸载/重装（如解锁流程会反复拆装 NVIDIA 驱动）后自动重连恢复。
@@ -93,10 +95,16 @@ pyinstaller GPU-Monitor.spec
 
 ## GitHub CI 构建
 
-仓库内置 `.github/workflows/build-exe.yml`：推送到 `master`、提 PR 或手动触发（Actions →
+仓库内置 `.github/workflows/build-exe.yml`：推送到 `master`、提 PR、推 tag 或手动触发（Actions →
 「Build Windows EXE」→ Run workflow）都会在 `windows-latest` 上用 PyInstaller 按
-`GPU-Monitor.spec` 打包，并把 `dist/GPU-Monitor.exe` 作为名为 **GPU-Monitor-windows** 的
-artifact 保留 30 天。没有本机环境也能在 Actions 运行页的 Artifacts 区下载 exe 直接使用。
+`GPU-Monitor.spec` 打包，产出 `dist/GPU-Monitor.exe`，并同时发布两处：
+
+| 位置 | 内容 | 下载条件 |
+| --- | --- | --- |
+| Actions 运行页 Artifacts | `GPU-Monitor-windows`（保留 30 天，会过期） | 需登录 GitHub |
+| GitHub Releases | 推 `master` → 滚动预发布 **`ci-latest`**（每次都覆盖更新）；推 tag（`v*`）→ 以 tag 命名的正式版 | 公开、免登录、不过期 |
+
+所以没有本机环境也能直接拿到能用的 exe（推荐去 Releases 下载）。
 
 ## 已知限制
 

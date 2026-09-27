@@ -3,12 +3,13 @@ name: Build Windows EXE
 on:
   push:
     branches: [master]
+    tags: ['v*']
   pull_request:
     branches: [master]
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 concurrency:
   group: build-exe-${{ github.ref }}
@@ -62,3 +63,42 @@ jobs:
           path: dist/GPU-Monitor.exe
           if-no-files-found: error
           retention-days: 30
+
+      # Artifacts expire and require login to download, so also publish the exe
+      # as a real GitHub Release asset (public, permanent, no login needed).
+      #  * a git tag (v*)  -> normal release named after the tag
+      #  * master builds   -> rolling pre-release "ci-latest", overwritten each build
+      - name: Publish GitHub release with the exe
+        if: github.event_name != 'pull_request'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $exe = "dist/GPU-Monitor.exe"
+          $runUrl = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          $isTag = ($env:GITHUB_REF_TYPE -eq "tag")
+
+          if ($isTag) {
+            $tag  = $env:GITHUB_REF_NAME
+            $title = "GPU Monitor $tag"
+            $notes = "Windows build for tag $tag, packaged by GitHub Actions with PyInstaller (GPU-Monitor.spec).`nDownload GPU-Monitor.exe below - no installer, no Python."
+          } else {
+            $tag   = "ci-latest"
+            $title = "GPU Monitor CI build (rolling)"
+            $notes = "Rolling pre-release: rebuilt on every push to master. This build: commit $env:GITHUB_SHA (short: $($env:GITHUB_SHA.Substring(0,7))), ref $env:GITHUB_REF_NAME.`nBuild log: $runUrl`nDownload GPU-Monitor.exe below - no installer, no Python. It is replaced by the next master build."
+          }
+
+          gh release view $tag 2>&1 | Out-Null
+          $exists = ($LASTEXITCODE -eq 0)
+          if ($exists) {
+            if (-not $isTag) {
+              gh release edit $tag --title $title --notes $notes
+            }
+            gh release upload $tag $exe --clobber
+          } elseif ($isTag) {
+            gh release create $tag $exe --title $title --notes $notes
+          } else {
+            gh release create $tag $exe --title $title --notes $notes --prerelease
+          }
+
+          gh release view $tag

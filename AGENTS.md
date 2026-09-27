@@ -56,6 +56,7 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 ### GitHub CI 打包产物可直接下载验证
 
 - CI：`.github/workflows/build-exe.yml`（push master / PR / 手动触发 → `windows-latest` + `pip install -r requirements.txt` + `pyinstaller GPU-Monitor.spec`，artifact 名 `GPU-Monitor-windows`）。
+- CI 同时把 exe 发成 GitHub Release：推 `master` → 滚动预发布 `ci-latest`（每次都覆盖），推 tag `v*` → 正式版。用 runner 自带的 `gh` + `GH_TOKEN: secrets.GITHUB_TOKEN`（需 `permissions: contents: write`），公开免登录下载。
 - 查运行状态：仓库公开，无需 token —— `curl https://api.github.com/repos/hongguifeng/cmp170hx-gpu-monitor/actions/runs/<run_id>` 与 `/artifacts`、`/jobs`。
 - 下载 artifact 需要 token：`printf "protocol=https\nhost=github.com\n\n" | git credential fill`（wincred 中存的是 `gho_` PAT）→ `curl -L -H "Authorization: Bearer $TOK" <archive_download_url>`。
 - 现象：CI 产物（约 19.5MB）比本地产物（约 18.7MB）大 —— GitHub runner 上没有 UPX，spec 里的 `upx=True` 会被静默跳过。

@@ -6,6 +6,8 @@ A small GPU monitoring utility for **CMP 170HX × 2 in MCDM mode**.
 
 📖 Chinese documentation: [README.md](README.md) · this file is the English version.
 
+**Download the exe**: the rolling pre-release **[ci-latest](https://github.com/hongguifeng/cmp170hx-gpu-monitor/releases/tag/ci-latest)** — its asset is the `GPU-Monitor.exe` packaged by CI (public download, no login, replaced on every push to `master`).
+
 In MCDM mode, NVAPI-based tools (GPU-Z, LibreHardwareMonitor, ...) **cannot see the card at all**.
 This tool talks over the **NVML channel** (the same source `nvidia-smi` uses), so it reliably reads
 core temperature, HBM memory temperature, power draw and VRAM usage — and it reconnects by itself
@@ -106,10 +108,16 @@ To replace the running exe, stop the watchdog first (see [AGENTS.md](AGENTS.md))
 ## Building in GitHub CI
 
 The repository ships `.github/workflows/build-exe.yml`: pushing to `master`, opening a pull request,
-or running the workflow manually (Actions → "Build Windows EXE" → Run workflow) builds the exe on a
-`windows-latest` runner with PyInstaller using `GPU-Monitor.spec`, then uploads
-`dist/GPU-Monitor.exe` as an artifact named **GPU-Monitor-windows**, kept for 30 days. You can download
-that exe straight from the Artifacts section of the workflow run page — no local toolchain required.
+pushing a tag, or running the workflow manually (Actions → "Build Windows EXE" → Run workflow) builds
+`dist/GPU-Monitor.exe` on a `windows-latest` runner with PyInstaller using `GPU-Monitor.spec`, then
+publishes it in two places:
+
+| Where | What | Download requirements |
+| --- | --- | --- |
+| Artifacts on the workflow run page | `GPU-Monitor-windows`, kept for 30 days, expires | login to GitHub |
+| GitHub Releases | push to `master` → rolling pre-release **`ci-latest`** (overwritten by every build); push a tag (`v*`) → a real release named after that tag | public, no login, never expires |
+
+So a usable exe is available without any local toolchain — the Releases page is the better place to get it.
 
 ## Known limitations
 
