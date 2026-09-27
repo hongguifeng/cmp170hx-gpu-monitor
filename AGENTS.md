@@ -61,6 +61,12 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 - 现象：CI 产物（约 19.5MB）比本地产物（约 18.7MB）大 —— GitHub runner 上没有 UPX，spec 里的 `upx=True` 会被静默跳过。
 - 坑：本机没装 `gh` CLI；`Get-Process GPU-Monitor` 会看到 **2 个**同路径进程，那是 PyInstaller onefile 的父/子进程，不是重复启动。
 
+### 验证脚本不要向控制台打印非 ASCII
+
+- 现象：`python -c "print(...)"` 打印中文/emoji 时报 `UnicodeEncodeError: 'gbk' codec can't encode character`，整条 `cmd && cmd` 链因此中断。
+- 原因：本机控制台默认 GBK 编码，而文件内容本身是 UTF-8（`open(..., encoding='utf-8')` 读入没问题）。
+- 做法：验证脚本只打印 ASCII，或先设 `PYTHONIOENCODING=utf-8`；检查文件内容用 `file` / `grep` 而不是 `print`。
+
 <!--
 ### 某某问题
 - 现象：...
