@@ -90,15 +90,19 @@ jobs:
 
           gh release view $tag 2>&1 | Out-Null
           $exists = ($LASTEXITCODE -eq 0)
-          if ($exists) {
-            if (-not $isTag) {
-              gh release edit $tag --title $title --notes $notes
+          if ($isTag) {
+            if ($exists) {
+              gh release upload $tag $exe --clobber
+            } else {
+              gh release create $tag $exe --title $title --notes $notes
             }
-            gh release upload $tag $exe --clobber
-          } elseif ($isTag) {
-            gh release create $tag $exe --title $title --notes $notes
           } else {
-            gh release create $tag $exe --title $title --notes $notes --prerelease
+            # Rolling build: delete + recreate so the ci-latest tag always points at
+            # the commit that was just built (a plain edit would leave an older tag).
+            if ($exists) {
+              gh release delete $tag --cleanup-tag --yes
+            }
+            gh release create $tag $exe --title $title --notes $notes --prerelease --target $env:GITHUB_SHA
           }
 
           gh release view $tag
