@@ -1,5 +1,7 @@
 # GPU Monitor
 
+[![Build Windows EXE](https://github.com/hongguifeng/cmp170hx-gpu-monitor/actions/workflows/build-exe.yml/badge.svg)](https://github.com/hongguifeng/cmp170hx-gpu-monitor/actions/workflows/build-exe.yml)
+
 针对 **CMP 170HX × 2（MCDM 模式）** 的显卡监控小工具。
 
 在 MCDM 模式下，基于 NVAPI 的工具（GPU-Z、LibreHardwareMonitor 等）**完全看不到显卡**。
@@ -86,6 +88,13 @@ pyinstaller GPU-Monitor.spec
 ```
 
 产物为 `dist/GPU-Monitor.exe`，可替换根目录的旧 exe。
+
+## GitHub CI 构建
+
+仓库内置 `.github/workflows/build-exe.yml`：推送到 `master`、提 PR 或手动触发（Actions →
+「Build Windows EXE」→ Run workflow）都会在 `windows-latest` 上用 PyInstaller 按
+`GPU-Monitor.spec` 打包，并把 `dist/GPU-Monitor.exe` 作为名为 **GPU-Monitor-windows** 的
+artifact 保留 30 天。没有本机环境也能在 Actions 运行页的 Artifacts 区下载 exe 直接使用。
 
 ## 已知限制
 

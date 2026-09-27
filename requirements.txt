@@ -1,0 +1,6 @@
+# Runtime dependencies (gpu-monitor-tray.py)
+pystray
+pillow
+
+# Build-time dependency for packaging dist/GPU-Monitor.exe
+pyinstaller>=6.0
