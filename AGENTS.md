@@ -34,6 +34,24 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 
 （在此追加对本项目后续开发有用的经验与知识。示例格式：）
 
+### 替换根目录 GPU-Monitor.exe 必须先停看门狗
+
+- 现象：`cp dist/GPU-Monitor.exe .` 报 `Device or resource busy`；杀掉主进程后它又被自动拉起。
+- 原因：`watchdog.ps1` 每 10 秒查活并 `Start-Process` 重启；运行中的 exe 文件被占用无法覆盖。
+- 做法：先按 CommandLine 匹配 `*watchdog.ps1*` 找到并杀掉 powershell 看门狗进程 → `Stop-Process -Name GPU-Monitor` → 再覆盖 exe → `Start-Process` 启动新 exe（它会自己重新拉起看门狗）。
+- 坑：git-bash 会把 `taskkill /IM`、`/PID` 参数当成路径转换，导致参数失效；改用 powershell 的 `Stop-Process`。
+
+### UI 验证截图方法（无 GUI 自动化工具时）
+
+- 抓屏：powershell `Add-Type System.Windows.Forms,System.Drawing` + `Graphics.CopyFromScreen` 存 PNG，再用 PIL 裁剪。
+- 悬浮窗默认位置在右下角：`x = 屏宽 - w - 16`，`y = 屏高 - h - 86`；精简模式 w=440、h=32+30*卡数+6；完全模式 524x492。
+- 托盘图标不必去任务栏找（可能被收纳在溢出区）：用 `importlib.util.spec_from_file_location` 加载 `gpu-monitor-tray.py`，直接调 `make_tray_image()` / `tray_image_for()` 渲染——这正是程序实际使用的同一代码路径，渲染结果即真实效果。
+
+### docs/img 截图没有自动生成脚本
+
+- `docs/img/tray-icons.png` 是手工拼合的 672x240 画布（背景 RGB(20,22,26)），三个 185px 图标粘贴在 x=23 / 239 / 455，y=23。
+- 只改配色时不必重画整图：把原图对应图标按抗锯齿线性反解 `t = (p.b - 38) / (255 - 38)`，再取 `新色 = (28,31,38) + t * (目标色 - (28,31,38))` 重绘，可与原图风格完全一致。
+
 <!--
 ### 某某问题
 - 现象：...

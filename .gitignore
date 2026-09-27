@@ -4,12 +4,14 @@ __pycache__/
 *$py.class
 
 # Build output
-_build/
+build/
+dist/
 GPU-Monitor.exe
 
 # Logs and runtime flags
 monitor.log
 compact.flag
+no-restart.flag
 
 # Screenshots / debug crops
 screen-capture.png

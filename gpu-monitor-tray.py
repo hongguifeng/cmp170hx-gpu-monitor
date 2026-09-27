@@ -284,7 +284,7 @@ def set_autostart(enable):
     return is_autostart()
 
 # ---------------------------------------------------------------- tray icon
-def make_tray_image(text="G", color="#4f8cff"):
+def make_tray_image(text="G", color="#3ddc84"):
     img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
     d = ImageDraw.Draw(img)
     d.rounded_rectangle([2, 2, 62, 62], radius=14, fill=(28, 31, 38, 255),
@@ -305,7 +305,7 @@ def tray_image_for(temps):
     if not ts:
         return make_tray_image()
     t = max(ts)
-    color = "#ff5555" if t >= 80 else "#ffb020" if t >= 68 else "#4f8cff"
+    color = "#ff5555" if t >= 80 else "#ffb020" if t >= 68 else "#3ddc84"
     return make_tray_image(str(int(round(t))), color)
 
 # ---------------------------------------------------------------- UI
