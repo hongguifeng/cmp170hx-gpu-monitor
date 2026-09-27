@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build output
+_build/
+GPU-Monitor.exe
+*.spec
+
+# Logs and runtime flags
+monitor.log
+compact.flag
+
+# Screenshots / debug crops
+screen-capture.png
+win-crop*.png
+
+# OS files
+Thumbs.db
+.DS_Store
