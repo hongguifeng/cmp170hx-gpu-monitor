@@ -331,6 +331,7 @@ class MonitorApp:
         self.stale_streak = 0
         self.ui_ngpu = NVML_STATE["ngpu"]
         self.compact = load_compact()
+        self.moved = False  # user dragged the window: keep their position
 
         root.title("GPU Monitor")
         root.configure(bg=BG)
@@ -374,12 +375,21 @@ class MonitorApp:
 
     def apply_geometry(self):
         if self.compact:
+            # height is derived from the GPU count, and it must be re-applied
+            # whenever that count changes (driver reinstall brings the cards
+            # back one at a time: a window sized while ngpu was still 0/1
+            # silently clips the rows that appear later).
             w = 440
-            h = 32 + 30 * max(self.ui_ngpu, 1) + 6
+            h = 32 + 33 * max(self.ui_ngpu, 1) + 6
         else:
             w, h = 524, 492
-        sw, sh = self.root.winfo_screenwidth(), self.root.winfo_screenheight()
-        self.root.geometry("%dx%d+%d+%d" % (w, h, sw - w - 16, sh - h - 86))
+        if self.moved:
+            self.root.geometry("%dx%d" % (w, h))  # resize only, keep position
+        else:
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+            self.root.geometry("%dx%d+%d+%d" % (w, h, sw - w - 16,
+                                                sh - h - 86))
 
     def toggle_compact(self):
         self.compact = not self.compact
@@ -461,6 +471,7 @@ class MonitorApp:
 
     def _move(self, e):
         if self._drag:
+            self.moved = True
             self.root.geometry("+%d+%d" % (e.x_root - self._drag[0],
                                            e.y_root - self._drag[1]))
 
@@ -506,6 +517,7 @@ class MonitorApp:
                                                NVML_STATE["ngpu"]))
             self.ui_ngpu = NVML_STATE["ngpu"]
             self.build_cards(max(self.ui_ngpu, 1))
+            self.apply_geometry()  # compact height tracks the GPU count
 
         with_data = 0
         healthy = 0

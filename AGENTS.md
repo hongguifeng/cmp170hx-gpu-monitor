@@ -62,6 +62,14 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 - 现象：CI 产物（约 19.5MB）比本地产物（约 18.7MB）大 —— GitHub runner 上没有 UPX，spec 里的 `upx=True` 会被静默跳过。
 - 坑：本机没装 `gh` CLI；`Get-Process GPU-Monitor` 会看到 **2 个**同路径进程，那是 PyInstaller onefile 的父/子进程，不是重复启动。
 
+### 改显卡数量后必须重新应用窗口尺寸（“只显示一个 GPU”的真凶）
+
+- 现象：重启后走解锁流程（驱动卸载重装），日志里 `ngpu 1 -> 2, rebuild UI` 明明执行了，状态栏也写「NVML · 2 卡」，但悬浮窗只有一行 GPU。
+- 原因：精简模式的窗高由卡数推导（`32 + 33*n + 6`），而 `apply_geometry()` 只在 `__init__` / 切模式时调用。若程序是在驱动只认出 1 张卡（甚至 0 张，`reinit: init rc=6`）时被看门狗拉起的，窗高就锁死在 1 行；之后 `build_cards(2)` 建出第二张卡的行，但它落在窗口可视区之外（Tk 里该行 `winfo_ismapped()==0`），看起来就是“只有一张卡”。
+- 修复：`_tick` 里卡数变化重建卡片后补一次 `apply_geometry()`；同时用 `self.moved` 记录用户是否拖动过窗口，拖过就只 resize 不改位置（否则用户摆好的位置会被弹回右下角）。
+- 排查手法：`python test-geometry.py`（强制 `NVML_STATE["ngpu"]=1` 再走真实 `_tick` 恢复），断言 `32 + body.winfo_reqheight() <= win_h` 且每行 `winfo_ismapped()`。只改 `NVML_STATE` 不改真实 NVML 即可复现。
+- 截取过渡态截图前要 `for aid in root.tk.call("after", "info"): root.after_cancel(aid)`，否则 `MonitorApp.__init__` 注册的 `after(300, tick)` 会提前把状态推进到 2 卡。
+
 ### 验证脚本不要向控制台打印非 ASCII
 
 - 现象：`python -c "print(...)"` 打印中文/emoji 时报 `UnicodeEncodeError: 'gbk' codec can't encode character`，整条 `cmd && cmd` 链因此中断。
