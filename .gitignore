@@ -6,7 +6,6 @@ __pycache__/
 # Build output
 _build/
 GPU-Monitor.exe
-*.spec
 
 # Logs and runtime flags
 monitor.log
