@@ -9,6 +9,7 @@
 import ctypes
 import faulthandler
 import os
+import queue
 import subprocess
 import sys
 import threading
@@ -195,8 +196,9 @@ def read_gpu(idx):
     with NSMI_LOCK:
         v = NSMI.get(str(idx))
     if v and time.time() - v[2] < 5:  # entries expire: no frozen temps
-        d["temp"] = v[0]   # same value as NVML die temp, from stream
-        d["mtemp"] = v[1]  # HBM memory temp
+        if v[0] is not None:
+            d["temp"] = v[0]      # same value as NVML die temp, from stream
+        d["mtemp"] = v[1]         # HBM memory temp, None when sensor says N/A
     return d
 
 
@@ -209,41 +211,133 @@ def pretty_name(raw):
 # We keep one streaming child process and parse its 1 Hz lines.
 NSMI = {}
 NSMI_LOCK = threading.Lock()
+NSMI_CMD = ["nvidia-smi", "--query-gpu=index,temperature.gpu,"
+                        "temperature.memory",
+            "--format=csv,noheader,nounits", "-l", "1"]
+NSMI_RESTART = 60   # -l fixes its device list at spawn: re-enumerate often
+NSMI_SILENT = 20    # no line at all for this long -> child is wedged
+NSMI_STALE = 15     # lines arrive but carry no usable data -> restart
+NSMI_CHILD = None   # current child, killed on quit so no orphan survives
+
+
+def smi_num(text):
+    """Parse one nvidia-smi field; '[N/A]' and friends become None."""
+    try:
+        return int(text)
+    except ValueError:
+        return None
+
+
+def nsmi_child_kill():
+    """Kill the streaming child (app quit used to leave it running forever)."""
+    global NSMI_CHILD
+    with NSMI_LOCK:
+        p, NSMI_CHILD = NSMI_CHILD, None
+    if p is not None:
+        try:
+            p.kill()
+        except Exception:
+            pass
 
 
 def nsmi_reader():
+    """Keep exactly one feeding nvidia-smi stream.
+
+    The old reader could wedge forever: a child that survives the unlock
+    (device disabled + driver reinstalled underneath it) stops producing
+    usable lines but never exits, so readline() blocked for good and the
+    restart check -- which only ran after a line was read -- never fired.
+    Symptom: NVML recovers, every field looks fine, 存温 stays "--" until
+    the app itself is restarted. Every wait here now has a deadline, and
+    every exit path kills its child.
+    """
+    last_death_log = 0.0
     while True:
+        p = None
         try:
             p = subprocess.Popen(
-                ["nvidia-smi", "--query-gpu=index,temperature.gpu,"
-                                "temperature.memory",
-                 "--format=csv,noheader,nounits", "-l", "1"],
+                NSMI_CMD,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 text=True,
                 creationflags=0x08000000)  # CREATE_NO_WINDOW: no console popup
+            with NSMI_LOCK:
+                NSMI_CHILD = p
             t0 = time.time()
+            last_data = t0
+            lines = 0
+            data = 0
+            junk = 0
+            q = queue.Queue()
+
+            def pump(proc=p, out=q):  # reader thread: never blocks our loop
+                try:
+                    for ln in proc.stdout:
+                        out.put(ln)
+                except Exception:
+                    pass
+                out.put(None)  # EOF, or the pipe went away
+
+            threading.Thread(target=pump, daemon=True).start()
             while True:
-                line = p.stdout.readline()
-                if line == "":
-                    break  # process died
+                try:
+                    line = q.get(timeout=NSMI_SILENT)
+                except queue.Empty:
+                    log("nsmi stream silent %ds (lines=%d data=%d), restart"
+                        % (int(time.time() - t0), lines, data))
+                    break
+                if line is None:
+                    now = time.time()
+                    if now - last_death_log > 10:
+                        last_death_log = now
+                        log("nsmi stream died rc=%s after %ds "
+                            "(lines=%d data=%d)"
+                            % (p.poll(), int(now - t0), lines, data))
+                    break  # process died -> respawn below
+                if not line.strip():
+                    continue
+                lines += 1
                 parts = [x.strip() for x in line.strip().split(",")]
                 if len(parts) == 3 and parts[0].isdigit():
-                    try:
-                        pair = (int(parts[1]), int(parts[2]))
-                    except ValueError:
-                        continue
-                    with NSMI_LOCK:
-                        NSMI[parts[0]] = (pair[0], pair[1], time.time())
-                if time.time() - t0 > 60:
-                    # periodic refresh: the -l loop fixes its device list at
-                    # spawn. A stream spawned mid-boot (before both GPUs are
-                    # up) keeps printing one GPU forever, which defeats the
-                    # stale-NVML detector. Restart to re-enumerate.
-                    p.kill()
+                    g = smi_num(parts[1])
+                    m = smi_num(parts[2])
+                    if g is not None or m is not None:
+                        with NSMI_LOCK:
+                            NSMI[parts[0]] = (g, m, time.time())
+                        data += 1
+                        last_data = time.time()
+                        junk = 0
+                    else:
+                        junk += 1
+                else:
+                    # "No devices were found" and friends: the device list
+                    # this child enumerated is gone for good -- its own loop
+                    # can never recover, so count it as no-data instead of
+                    # skipping the restart check like the old `continue` did.
+                    junk += 1
+                    if junk == 1:
+                        log("nsmi stream says: %r" % line.strip())
+                if time.time() - t0 > NSMI_RESTART:
+                    break  # periodic refresh: re-enumerate the device list
+                if time.time() - last_data > NSMI_STALE:
+                    log("nsmi stream fed no data for %ds, restart"
+                        % int(time.time() - last_data))
                     break
-        except Exception:
-            pass
-        time.sleep(2)  # process died -> restart
+        except Exception as e:
+            log("nsmi spawn failed: %r" % (e,))
+        finally:
+            if p is not None:
+                try:
+                    p.kill()
+                except Exception:
+                    pass
+                try:
+                    p.stdout.close()   # one pipe per restart: free it promptly
+                except Exception:
+                    pass
+                with NSMI_LOCK:
+                    if NSMI_CHILD is p:
+                        NSMI_CHILD = None
+        time.sleep(2)  # dead or wedged -> give the driver a moment, retry
 
 # ---------------------------------------------------------------- autostart
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
@@ -329,6 +423,7 @@ class MonitorApp:
         self.fail_streak = 0
         self.degraded_streak = 0
         self.stale_streak = 0
+        self.nsmi_streak = 0
         self.ui_ngpu = NVML_STATE["ngpu"]
         self.compact = load_compact()
         self.moved = False  # user dragged the window: keep their position
@@ -621,6 +716,19 @@ class MonitorApp:
         else:
             self.stale_streak = 0
 
+        # memory-temp blindness: NVML cannot read HBM on this stack (probe
+        # rc=2), the nvidia-smi stream is our only source. When it stops
+        # feeding us, every other field still looks healthy and only 存温
+        # goes "--" -- exactly the post-unlock report, so make it visible in
+        # the log instead of invisible.
+        if NVML_STATE["ok"] and nseen == 0:
+            self.nsmi_streak += 1
+            if self.nsmi_streak == 20 or \
+                    (self.nsmi_streak > 20 and self.nsmi_streak % 60 == 0):
+                log("no nsmi data for %ds: mtemp blind" % self.nsmi_streak)
+        else:
+            self.nsmi_streak = 0
+
         if not NVML_STATE["ok"]:
             self.status.config(text="  等待显卡(驱动重连中)…", fg="#ffb020")
         else:
@@ -718,6 +826,7 @@ def main():
             open(QUIT_FLAG, "w").close()
         except Exception:
             pass
+        nsmi_child_kill()   # otherwise the stream child outlives us forever
         os._exit(0)
 
     menu = pystray.Menu(
@@ -742,6 +851,7 @@ def main():
             open(QUIT_FLAG, "w").close()
         except Exception:
             pass
+        nsmi_child_kill()
         root.destroy()
 
     root.protocol("WM_DELETE_WINDOW", on_close)

@@ -76,6 +76,32 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 - 原因：本机控制台默认 GBK 编码，而文件内容本身是 UTF-8（`open(..., encoding='utf-8')` 读入没问题）。
 - 做法：验证脚本只打印 ASCII，或先设 `PYTHONIOENCODING=utf-8`；检查文件内容用 `file` / `grep` 而不是 `print`。
 
+### 存温一直 "--" 的根因：nvidia-smi 流进程卡死（已修）
+
+- 现象：开机自启后紧接着跑解锁，NVML 重连成功、其它字段全恢复，唯独存温一直 `--`；只有退出并重启工具才恢复。
+- 原因：存温只来自常驻 `nvidia-smi -l 1` 子进程。设备被禁用 / 驱动重装的窗口里该子进程**不退出**，只是不再吐有效数据；
+  旧 reader 卡在 `readline()`，而 60s 重启检查只在“读到一行之后”才执行（解析失败还先 `continue` 跳过它）→ 流永不重启 → `NSMI` 永远为空。
+- 铁证：解锁前 1 秒 spawn 的那个 nvidia-smi 进程，5.5 小时后仍在运行且父进程已消失 → 它在整场解锁期间都没退出过。
+- 修法：读输出挤到 pump 线程 + `Queue.get(timeout=)`；无输出 20s / 无有效数据 15s / 每 60s 都重启并 kill；
+  `[N/A]` 只丢存温不丢核温；退出（托盘退出、关窗）时 `nsmi_child_kill()` 不再留孤儿。日志关键字：`nsmi stream silent` / `fed no data` / `mtemp blind`。
+- 验证手法：`NSMI_CMD` 可整体换成假的 nvidia-smi 脚本，分别模拟“吐 `No devices were found` 但永不退出”和“彻底不出声”，
+  新旧代码各跑一遍对比（旧版 1 次 spawn 后永久失明；新版 15~20s 内自愈并留下日志）。另：旧版的 `NSMI_CMD` 没人用，
+  要测旧代码得 monkeypatch `mod.subprocess.Popen` 把 `nvidia-smi` 换掉，否则会默默跑成真的 nvidia-smi。
+
+### 截图验证优先用 PIL ImageGrab（本机 Add-Type 不可用）
+
+- 本机 `Add-Type System.Windows.Forms,System.Drawing` 报 TypeNotFound（Bitmap / Graphics 都拿不到），powershell 截图路线不可靠。
+- 可用：`from PIL import ImageGrab; ImageGrab.grab(all_screens=True)`（3840x2160），再用 `win32gui.EnumWindows` +
+  `win32process.GetWindowThreadProcessId` 找标题为 `GPU Monitor` 的窗口，按 `GetWindowRect` 裁剪即为完整悬浮窗。
+- 窗体尺寸可反推模式与卡数：精简 440 x (32+33*n+6)，完全 524x492。
+
+### git-bash 里跑 PowerShell 脚本的坑
+
+- `-File /tmp/x.ps1` 要先 `cygpath -w` 转成 Windows 路径，否则脚本根本不会执行（表现为“没有任何输出 + rc=4294967295”，但可能已部分执行）。
+- 用 `sed` 改写 ps1 里的 Windows 路径时，替换串中的 `\U` 会被当成“转大写”修饰符，路径会变乱码；直接用 write 工具写脚本文件。
+- `whoami /groups` 会被 coreutils 的 whoami 抢先，要用 `/c/Windows/System32/whoami.exe`；判断是否管理员用 `net session`（拒绝访问 = 非管理员，所以无法用禁用设备来复现解锁场景）。
+- 清理遗留的 nvidia-smi 孤儿流：先用 `Get-Process -Id <ppid>` 确认父进程已消失再 `Stop-Process`，否则会误杀现役实例的流。
+
 <!--
 ### 某某问题
 - 现象：...
