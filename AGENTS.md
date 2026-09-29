@@ -102,6 +102,54 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 - `whoami /groups` 会被 coreutils 的 whoami 抢先，要用 `/c/Windows/System32/whoami.exe`；判断是否管理员用 `net session`（拒绝访问 = 非管理员，所以无法用禁用设备来复现解锁场景）。
 - 清理遗留的 nvidia-smi 孤儿流：先用 `Get-Process -Id <ppid>` 确认父进程已消失再 `Stop-Process`，否则会误杀现役实例的流。
 
+### 切换分辨率后悬浮窗跑到桌面外（已修）
+
+- 现象：4K → 2K 之后小控件“不见了”；它仍停在为 4K 算出的右下角坐标（x=3384 > 2560），永远在屏幕外。
+- 原因：`winfo_screenwidth/height` 是 Tk 在解释器启动时缓存的，换屏后不会变；而锚点只在 `__init__` / 切模式时算一次，换屏事件根本没人处理。
+- 做法：`_tick` 每秒用 `user32.GetSystemMetrics` 取实时桌面尺寸（SM_CXSCREEN=0、SM_CYSCREEN=1；虚拟桌面 SM_XVIRTUALSCREEN=76、SM_YVIRTUALSCREEN=77、SM_CXVIRTUALSCREEN=78、SM_CYVIRTUALSCREEN=79），变了就重新 `apply_geometry()`：没拖动过的重新锚到新右下角，拖动过的用 `ensure_on_screen()` 夹回桌面内（`show()` 里也补一次，防止切屏时窗口是隐藏的）。日志关键字：`display change` / `window off desktop`。
+- 注意：Windows 里主屏左上角恒为 (0,0)，所以 Tk 的 `+x+y` 就是绝对屏幕坐标；副屏坐标可为负，夹取范围要用虚拟桌面而不是主屏。
+
+### Tk 窗口坐标与尺寸的读取坑
+
+- 已经映射过的窗口，即使 `withdraw()` 之后 `winfo_x/y/width/height` 仍然准确（实测与 `GetWindowRect(GetAncestor(winfo_id(), GA_ROOT))` 一致）；从未映射过的新窗口则报 (0,0) 和 1x1，必须先 `root.update()` 跑一轮事件才会落位。
+- `geometry("%dx%d")` 这类只改尺寸的调用不会改位置，但 `winfo_width/height` 要 `update_idletasks()` 才反映新值。
+- 本机系统 DPI=96（100% 缩放）、进程 DPI awareness=0，因此 GetSystemMetrics 与 Tk 坐标同为物理像素，可直接混用。
+
+### 验证脚本看不到 traceback（被项目 excepthook 吞掉）
+
+- 现象：测试脚本报错时 stderr 全空、只剩 rc=1，栈信息默默写进了 monitor.log。
+- 原因：`gpu-monitor-tray.py` 在 import 时就设置 `sys.excepthook = _excepthook`，用 importlib 加载它之后对宿主脚本也生效。
+- 做法：加载模块后立刻 `sys.excepthook = sys.__excepthook__`。另：Windows 版 python 认不出 git-bash 的 `/tmp/...`，脚本路径要先 `cygpath -w`。
+
+### 本机没法真的切分辨率来复现换屏问题
+
+- 显示设备名是通用驱动 `CDD`（CMP 170HX 没有视频输出），`ChangeDisplaySettingsExW(..., CDS_TEST)` 对 1920x1080、2560x1440 等模式一律返回 -4（DISP_CHANGE_BADFLAGS），虽然这些模式都能枚举到。
+- 结论：验证“换屏后重定位”只能 monkeypatch `desktop_metrics` 返回假桌面尺寸来驱动真实代码路径（真实 Tk 窗口确实会被移动，可截图确认），不要指望程序化换分辨率。
+
+### 改窗口尺寸必须以右下角为锚点（项目约定）
+
+- 约定：用户拖动过的悬浮窗（`self.moved`）变尺寸时（精简 ⇄ 完全、显卡数变化）必须保持右下角不动，而不是左上角。
+- 原因：以左上角为锚点时 104 → 492 的高度跳变会把窗口推到任务栏以下甚至屏幕外，492 → 104 则会在原位置留个空洞。
+- 做法：`apply_geometry()` 的 moved 分支先 `update_idletasks()` 拿当前 `winfo_width/height`，再 `x += ow - w; y += oh - h`，最后 `geometry("WxH+X+Y")` + `ensure_on_screen()`；回归断言在 `test-geometry.py` 的第 [4][5] 步。
+
+### 验证脚本会误改用户的 compact.flag
+
+- 现象：跑过包含 `toggle_compact()` 的验证脚本后，`compact.flag` 消失，`test-geometry.py` 第 [1] 步变成完全模式（win_h=492），第 [2] 步 `h2 > h1` 断言假失败。
+- 原因：`toggle_compact()` 会 `save_compact()` —— 文件存在与否就是用户的跨重启偏好，测试一旦切换就把它改写了。
+- 做法：测试里直接设 `app.compact` + `build_cards()` + `apply_geometry()`，不走按钮命令；若确实要模拟点按钮，先记录 `os.path.exists(MODE_FLAG)`，结束后再 `touch compact.flag` 恢复。（跑 test-geometry.py 前先确认 compact.flag 存在。）
+
+### 真点击 exe 按钮做端到端 UI 验证（无需 GUI 自动化框架）
+
+- 用 `user32.SetCursorPos` + `mouse_event(LEFTDOWN/LEFTUP)` 直接点屏幕绝对坐标；先 `GetCursorPos` 存下原光位置，结束后 `SetCursorPos` 回去。
+- 标题栏上的「精简/完全」按钮大致在 `rect.r - 40, rect.t + 16`（`—` 最靠右，它左边 2px 就是这个按钮），两种模式下位置一致。
+- 验证方法：前后各用 `win32gui.EnumWindows` 找标题 `GPU Monitor` 的窗口，比较 `GetWindowRect` 的尺寸与右下角，再 `ImageGrab` 裁剪存图。
+
+### 默认落位要贴边：用 SPI_GETWORKAREA，不要硬编码边距
+
+- 旧做法 `x = sw - w - 16, y = sh - h - 86` 把任务栏当成 48px，结果上边缘离任务栏还空 38px、右边缘离屏幕空 16px，换机器 / 换任务栏高度就错位。
+- 做法：`user32.SystemParametersInfoW(SPI_GETWORKAREA=0x0030, 0, byref(RECT), 0)` 拿**实时**工作区（已扣除任务栏与托盘），默认锚点就取它的右下角：`x = wa.right - w, y = wa.bottom - h`。任务栏变高、改成自动隐藏或停靠到其它边，下一 tick 就会重新贴边（前提：窗口没被用户拖动过）。
+- 坑：`_check_display` 的比较元组必须把 `work_area()` 一并放进去（`(desktop_metrics(), work_area())`），否则任务栏变化不会触发重新落位；而 `ensure_on_screen` 的夹取仍按整个虚拟桌面算 —— 被夹回的窗口可能压在任务栏上，但悬浮窗是 `-topmost`，会盖在任务栏之上而不是被藏掉。
+
 <!--
 ### 某某问题
 - 现象：...

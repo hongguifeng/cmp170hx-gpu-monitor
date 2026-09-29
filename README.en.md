@@ -38,6 +38,12 @@ Web dashboard (`gpu-monitor.py`, optional, see below):
   tray icon shows / hides the floating window
 - **Always-on-top floating window** — drag the title bar to move it; `—` hides it; two layouts
   (compact / full) can be switched, and the preference persists across restarts (`compact.flag`)
+  - by default it sits flush in the bottom-right corner: its right edge on the screen edge and its
+    bottom edge on the taskbar's top (it follows the taskbar's height and docked side)
+  - resizes (switching layout or a change in the GPU count) are anchored to the **bottom-right**
+    corner, so a window you placed stays exactly where you put it
+  - after a display resolution / monitor switch the window is re-placed and always ends up inside
+    the desktop (log keyword `display change`)
 - **Per-GPU readings** (NVML) — name, core temperature, GPU / memory clocks, utilisation, fan,
   VRAM usage, live power draw and power limit
 - **HBM memory temperature** — NVML's `TEMPERATURE_MEMORY` returns `NOT_SUPPORTED` on this platform,
