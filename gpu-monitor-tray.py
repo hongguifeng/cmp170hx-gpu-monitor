@@ -414,6 +414,53 @@ TXT = "#c8cdd8"
 DIM = "#9aa3b2"
 LINE = "#2a2f3a"
 
+user32 = ctypes.WinDLL("user32")
+user32.GetSystemMetrics.restype = ctypes.c_int
+
+
+def desktop_metrics():
+    """Live desktop sizes in pixels: (prim_w, prim_h, vx, vy, vw, vh).
+
+    Tk caches winfo_screenwidth/height when the interpreter starts, so after a
+    display mode switch (4K -> 2K) they keep reporting the old screen and the
+    window stays placed for it (i.e. off-screen). The OS numbers are live, and
+    for this DPI-unaware process they share Tk's coordinate space.
+    """
+    g = user32.GetSystemMetrics
+    # SM_CXSCREEN/SM_CYSCREEN = primary monitor; SM_X/Y/CX/CYVIRTUALSCREEN =
+    # the desktop that spans every connected monitor
+    return (g(0), g(1), g(76), g(77), g(78), g(79))
+
+
+SPI_GETWORKAREA = 0x0030
+
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+user32.SystemParametersInfoW.restype = ctypes.c_int
+user32.SystemParametersInfoW.argtypes = [ctypes.c_uint, ctypes.c_uint,
+                                         ctypes.c_void_p, ctypes.c_uint]
+
+
+def work_area():
+    """Desktop that is not covered by the taskbar/tray: (left, top, right, bottom).
+
+    The widget's default spot is the bottom-right corner of this area, so its
+    right edge lands on the screen edge and its bottom edge on the taskbar's
+    top edge. The old placement hardcoded a 86px bottom gap, which only made
+    sense for a 48px taskbar and left a 38px hole above it (plus 16px slack on
+    the right); the work area is live, so a taskbar that grows, shrinks or
+    docks to another side is followed on the next tick.
+    """
+    r = _RECT()
+    if not user32.SystemParametersInfoW(SPI_GETWORKAREA, 0, ctypes.byref(r), 0):
+        sw, sh = desktop_metrics()[:2]
+        return (0, 0, sw, sh)
+    return (r.left, r.top, r.right, r.bottom)
+
 
 class MonitorApp:
     def __init__(self, root, tray_icon):
@@ -427,6 +474,7 @@ class MonitorApp:
         self.ui_ngpu = NVML_STATE["ngpu"]
         self.compact = load_compact()
         self.moved = False  # user dragged the window: keep their position
+        self.last_desktop = (desktop_metrics(), work_area())
 
         root.title("GPU Monitor")
         root.configure(bg=BG)
@@ -479,12 +527,66 @@ class MonitorApp:
         else:
             w, h = 524, 492
         if self.moved:
-            self.root.geometry("%dx%d" % (w, h))  # resize only, keep position
+            # Resize about the bottom-right corner instead of the top-left: a
+            # widget parked in a screen corner grows out of that corner, and
+            # keeping the top-left fixed made the 104 -> 492 jump shove the
+            # window down past the taskbar (and the 492 -> 104 jump left a
+            # hole where the header used to be).
+            self.root.update_idletasks()  # so winfo reports the live size
+            ow = self.root.winfo_width()
+            oh = self.root.winfo_height()
+            x, y = self.root.winfo_x(), self.root.winfo_y()
+            if ow > 1 and oh > 1 and (ow, oh) != (w, h):
+                x += ow - w          # keep (x + w, y + h) where it was
+                y += oh - h
+            self.root.geometry("%dx%d+%d+%d" % (w, h, x, y))
+            self.ensure_on_screen((w, h))
         else:
-            sw = self.root.winfo_screenwidth()
-            sh = self.root.winfo_screenheight()
-            self.root.geometry("%dx%d+%d+%d" % (w, h, sw - w - 16,
-                                                sh - h - 86))
+            wl, wt, wr, wb = work_area()
+            # flush against the edges: right on the screen edge, bottom on the
+            # taskbar's top edge (this is the corner the widget is meant to sit
+            # in, so no margins)
+            self.root.geometry("%dx%d+%d+%d" % (w, h, wr - w, wb - h))
+
+    def ensure_on_screen(self, size=None):
+        """Pull the window back onto the desktop.
+
+        Placing the window for a 4K screen and then switching to 2K used to
+        leave it off-screen for good: the old anchor is far right of a 2560px
+        desktop, and nothing ever moved it again.
+        """
+        self.root.update_idletasks()  # flush a geometry request made just now
+        w, h = size or (self.root.winfo_width(), self.root.winfo_height())
+        x, y = self.root.winfo_x(), self.root.winfo_y()
+        _, _, vx, vy, vw, vh = desktop_metrics()
+        if w <= 0 or h <= 0:
+            return
+        if vw <= w or vh <= h:
+            # desktop smaller than the window: pin to the desktop origin
+            if (x, y) != (vx, vy):
+                self.root.geometry("+%d+%d" % (vx, vy))
+            return
+        nx = max(vx, min(x, vx + vw - w))
+        ny = max(vy, min(y, vy + vh - h))
+        if (nx, ny) != (x, y):
+            log("window off desktop (%d,%d) -> (%d,%d)" % (x, y, nx, ny))
+            self.root.geometry("+%d+%d" % (nx, ny))
+
+    def _check_display(self):
+        """Watch for a resolution / monitor switch and re-place the window.
+
+        Not-moved windows are re-anchored to the new bottom-right corner;
+        user-placed ones keep their spot but get clamped back into the new
+        desktop (a shrunk one, or a secondary monitor that got unplugged).
+        The work area is part of the comparison so a taskbar that changes
+        height or auto-hide state re-glues the default spot too.
+        """
+        m = (desktop_metrics(), work_area())
+        if m == self.last_desktop:
+            return
+        log("display change: %s -> %s" % (self.last_desktop, m))
+        self.last_desktop = m
+        self.apply_geometry()
 
     def toggle_compact(self):
         self.compact = not self.compact
@@ -578,6 +680,9 @@ class MonitorApp:
         self.visible = True
         self.root.deiconify()
         self.root.lift()
+        if self.moved:
+            # the screen may have changed while we were hidden
+            self.ensure_on_screen()
 
     def toggle(self):
         if self.visible:
@@ -740,6 +845,8 @@ class MonitorApp:
             self.tray_icon.icon = tray_image_for(temps)
         except Exception:
             pass
+
+        self._check_display()
 
     def draw_graph(self, i):
         cv = self.canvases[i]
