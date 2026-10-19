@@ -4,8 +4,9 @@
 
 ## 项目简介
 
-GPU Monitor：针对 CMP 170HX × 2（MCDM 模式）的显卡监控小工具。基于 NVML 读取显卡指标，
-HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件：
+GPU Monitor：针对 CMP 170HX × 2（MCDM 模式）的显卡监控小工具（也支持同机混插的 GeForce 卡）。
+基于 NVML 读取显卡指标；CMP 的 HBM 存温由常驻 `nvidia-smi -l 1` 流式进程解析，
+GDDR6X（如 RTX 3090）的存温走 NVAPI。主要文件：
 
 - `gpu-monitor-tray.py` —— 托盘 + 悬浮窗（主要交付物）
 - `gpu-monitor.py` —— 网页仪表盘（可选）
@@ -45,7 +46,7 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 
 - 抓屏：powershell `Add-Type System.Windows.Forms,System.Drawing` + `Graphics.CopyFromScreen` 存 PNG，再用 PIL 裁剪。
 - 坑：本机 `[System.Windows.Forms.Screen]::PrimaryBounds` 返回 null（Bitmap 构造随之失败），改用 `[System.Windows.Forms.SystemInformation]::VirtualScreen`（物理分辨率 3840x2160）。
-- 悬浮窗默认位置在右下角：`x = 屏宽 - w - 16`，`y = 屏高 - h - 86`；精简模式 w=440、h=32+30*卡数+6；完全模式 524x492。
+- 悬浮窗默认位置在右下角：`x = 屏宽 - w - 16`，`y = 屏高 - h - 86`；精简模式 w=440、h=32+33*卡数+6；完全模式 w=262*卡数、h=492。
 - 托盘图标不必去任务栏找（可能被收纳在溢出区）：用 `importlib.util.spec_from_file_location` 加载 `gpu-monitor-tray.py`，直接调 `make_tray_image()` / `tray_image_for()` 渲染——这正是程序实际使用的同一代码路径，渲染结果即真实效果。
 
 ### docs/img 截图没有自动生成脚本
@@ -93,7 +94,7 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 - 本机 `Add-Type System.Windows.Forms,System.Drawing` 报 TypeNotFound（Bitmap / Graphics 都拿不到），powershell 截图路线不可靠。
 - 可用：`from PIL import ImageGrab; ImageGrab.grab(all_screens=True)`（3840x2160），再用 `win32gui.EnumWindows` +
   `win32process.GetWindowThreadProcessId` 找标题为 `GPU Monitor` 的窗口，按 `GetWindowRect` 裁剪即为完整悬浮窗。
-- 窗体尺寸可反推模式与卡数：精简 440 x (32+33*n+6)，完全 524x492。
+- 窗体尺寸可反推模式与卡数：精简 440 x (32+33*n+6)，完全 262*n x 492。
 
 ### git-bash 里跑 PowerShell 脚本的坑
 
@@ -141,14 +142,50 @@ HBM 存温通过常驻 `nvidia-smi -l 1` 流式进程解析获得。主要文件
 ### 真点击 exe 按钮做端到端 UI 验证（无需 GUI 自动化框架）
 
 - 用 `user32.SetCursorPos` + `mouse_event(LEFTDOWN/LEFTUP)` 直接点屏幕绝对坐标；先 `GetCursorPos` 存下原光位置，结束后 `SetCursorPos` 回去。
-- 标题栏上的「精简/完全」按钮大致在 `rect.r - 40, rect.t + 16`（`—` 最靠右，它左边 2px 就是这个按钮），两种模式下位置一致。
-- 验证方法：前后各用 `win32gui.EnumWindows` 找标题 `GPU Monitor` 的窗口，比较 `GetWindowRect` 的尺寸与右下角，再 `ImageGrab` 裁剪存图。
+- 标题栏上的「精简/完全」按钮约在 `rect.r - 58, rect.t + 16`（`—` 最靠右）；`rect.r - 40` 可能落在两个按钮之间的空隙，必要时在 `r-45..r-65` 间扫点，每点一次用 `GetWindowRect` 确认宽度是否切换。
+- 验证方法：前后各用 `win32gui.EnumWindows` 找标题 `GPU Monitor` 的窗口，比较 `GetWindowRect` 的尺寸与右下角，再截图。分层窗口建议用 PrintWindow，见下条。
 
 ### 默认落位要贴边：用 SPI_GETWORKAREA，不要硬编码边距
 
 - 旧做法 `x = sw - w - 16, y = sh - h - 86` 把任务栏当成 48px，结果上边缘离任务栏还空 38px、右边缘离屏幕空 16px，换机器 / 换任务栏高度就错位。
 - 做法：`user32.SystemParametersInfoW(SPI_GETWORKAREA=0x0030, 0, byref(RECT), 0)` 拿**实时**工作区（已扣除任务栏与托盘），默认锚点就取它的右下角：`x = wa.right - w, y = wa.bottom - h`。任务栏变高、改成自动隐藏或停靠到其它边，下一 tick 就会重新贴边（前提：窗口没被用户拖动过）。
 - 坑：`_check_display` 的比较元组必须把 `work_area()` 一并放进去（`(desktop_metrics(), work_area())`），否则任务栏变化不会触发重新落位；而 `ensure_on_screen` 的夹取仍按整个虚拟桌面算 —— 被夹回的窗口可能压在任务栏上，但悬浮窗是 `-topmost`，会盖在任务栏之上而不是被藏掉。
+
+### nvidia-smi 在 Windows 不报 RTX 3090 显存温度，改走 NVAPI
+
+- 现象：`nvidia-smi --query-gpu=temperature.memory` 对 RTX 3090 返回 `N/A`，精简模式里 3090 的「存温」永远是 `--`；两张 CMP 的 HBM 存温正常。
+- 澄清：NVML 的 `nvmlTemperatureSensors_t` 只有 `NVML_TEMPERATURE_GPU=0`，不存在 memory 枚举；旧注释里「`TEMPERATURE_MEMORY` 返回 NOT_SUPPORTED」不对，实际 rc=2 是 `INVALID_ARGUMENT`。
+- 做法：用 `nvapi64.dll` 的 `nvapi_QueryInterface(0x65FE3AAD)` 取 `NvAPI_GPU_GetThermalSensors`。结构为 `version, mask, reserved[8], temperatures[32]`（`_pack_=8`，version=`0x000200A8`），mask 是按位选择的传感器集合，温度是 8.8 定点数（除以 256）。Ampere（3090）存温在 `temperatures[9]`；40 系用 7、50 系用 2（与 LibreHardwareMonitor 0.9.6 的 `NvidiaGpu` 表一致）。
+- 映射：`NvAPI_GPU_GetBusId` 得到 PCI bus（3090=4），NVML 的 `nvmlDeviceGetPciInfo_v3` 的 `bus` 字段同值；不要按枚举顺序硬匹配（NVAPI 在 MCDM 下只看得见 3090，CMP 不可见）。
+- 参考：本机 RTX 3090（驱动 610.88）实测 mask=`1<<9` 返回 54°C；LHM 0.9.6 的 `LibreHardwareMonitorLib.dll` IL 里可查到该函数 ID 与槽位。
+
+### 完全模式窗口宽度必须随卡数变化
+
+- 现象：加第三张卡后精简模式有 3 行，但完全模式只看得到 2 张；`NVML · 3 卡` 状态正常。
+- 原因：`apply_geometry()` 里完全模式宽度写死 `524`（= 2×250 + 2×12 padding），第三列被 pack 到窗口外；`winfo_ismapped()` 仍可能为 1，所以不能只靠 mapped 判断。
+- 做法：`w = (FULL_CARD_W + FULL_CARD_PAD) * n`（每卡 262px），3 卡 = 786px；`test-geometry.py` 第 [6] 步断言 `body.winfo_reqwidth() <= win_w` 且最右卡片 `rootx+width <=` 窗口右沿。
+- 坑：用户拖动过的窗口扩宽时会走 `ensure_on_screen()` 夹取；回归测试要把窗口放在靠右位置（如 `+3000+1500`），否则扩宽后左移出屏会被夹回，右下角断言失败。
+
+### read_gpu 异常必须就地捕获，否则自愈逻辑永远不跑
+
+- 现象：3 卡驱动切换期间 `monitor.log` 每秒一条 `OSError: exception: access violation reading 0x...`（`read_gpu` 里的 `nvmlDeviceGetTemperature`），持续 20+ 分钟；NVML 从不重建，直到手动退出。
+- 原因：`_tick` 里 `g = read_gpu(i)` 直接抛异常会跳出整个 `_tick`，后面的 `fail_streak` / `degraded_streak` / `nvml_reinit(force=True)` 全部被跳过，形成「每秒崩溃但不自愈」的死循环。
+- 做法：每张卡 `try/except`，失败按 `g={}` 处理并限频写日志；这样 `with_data` / `healthy` 统计照常累计，5s / 15s 后能触发强制重建。
+
+### 悬浮窗要「普通窗口之上、任务栏之下」
+
+- 需求：`-topmost` 会把窗口放进 topmost 带，默认排在 `Shell_TrayWnd` 之上；拖到任务栏上会盖住开始菜单 / 托盘 / 时间。
+- 做法：保持 `WS_EX_TOPMOST`，但用 `SetWindowPos(hwnd, taskbar, 0,0,0,0, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE|SWP_NOOWNERZORDER)` 把窗口插到任务栏之后（z-order 下方）。taskbar 用 `FindWindowW("Shell_TrayWnd")`；多屏先用 `MonitorFromWindow` 匹配 `Shell_SecondaryTrayWnd`，没有再用主任务栏。
+- 维护：点击 / `root.lift()` / `show()` 会把窗口抬回任务栏之上，所以要在 `<ButtonRelease-1>`、`<FocusIn>`、拖动 `_move`、`show()` 和每秒 `_tick` 里重新校正。校正前先沿 `GW_HWNDPREV` 向上找 taskbar：找到说明已经在下面，直接返回，避免无谓重排。
+- 验证：用 `GetTopWindow` + `GetWindow(GW_HWNDNEXT)` 枚举 z-order，app 的 index 应大于 taskbar（如 app=4、tray=3），且两者都带 `WS_EX_TOPMOST`；`root.lift()` 后 app 会变成 3、tray 4，调用 `keep_below_taskbar()` 后恢复。把窗口移到任务栏区域截图，任务栏应完整盖住窗口。
+- 坑：`SetWindowPos` 的 `hWndInsertAfter` 必须是 topmost 的 taskbar；若传普通窗口，目标窗口会被改成非 topmost。
+- 坑：不要在窗口映射前缓存 `GetAncestor(winfo_id(), GA_ROOT)` 的 HWND。Tk 映射后顶层 HWND 会变，缓存的旧句柄让后续 `SetWindowPos` 静默无效（日志还显示已设置成功）。每次现取；实测 `after(50)` 时拿到的 HWND 与最终可见窗口不同。
+
+### 分层窗口截图会有残影，改用 PrintWindow
+
+- 现象：`ImageGrab.grab(bbox=GetWindowRect(...))` 在精简→完全改尺寸后，截图左上角出现旧 header 的半透明残影（窗口本身内容正常，`PrintWindow` 干净）。
+- 原因：Tk 窗口带 `-alpha 0.97` 且 `overrideredirect`，改尺寸/移动后 DWM 的分层表面在屏幕截图中会残留旧帧。
+- 做法：`ctypes.WinDLL("user32").PrintWindow(hwnd, hdc, 2)` 把窗口画到内存 DC，再用 PIL 从 bitmap 取图；`win32gui` 没有导出 `PrintWindow`，必须用 ctypes。docs 截图用此法可避免残影。
 
 <!--
 ### 某某问题

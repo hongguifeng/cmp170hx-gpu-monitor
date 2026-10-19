@@ -40,8 +40,28 @@ class NvmlUtil(ctypes.Structure):
     _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
 
 
+class NvmlPciInfo(ctypes.Structure):
+    # struct nvmlPciInfo_t as returned by nvmlDeviceGetPciInfo_v3
+    _fields_ = [("busIdLegacy", ctypes.c_char * 16),
+                ("domain", ctypes.c_uint),
+                ("bus", ctypes.c_uint),
+                ("device", ctypes.c_uint),
+                ("pciDeviceId", ctypes.c_uint),
+                ("pciSubSystemId", ctypes.c_uint),
+                ("busId", ctypes.c_char * 32)]
+
+
 nv = ctypes.WinDLL("nvml.dll")
 NVML_STATE = {"ok": False, "ngpu": 0, "last_try": 0.0, "last_cnt": 0.0}
+# Supplemental NVAPI state. nvidia-smi exposes no memory-junction temperature
+# for GDDR6X consumer cards (the RTX 3090 reports N/A), but NVAPI's thermal
+# sensor array does. NVAPI cannot enumerate the CMPs in MCDM mode, so this is
+# only used to fill mtemp for cards the nvidia-smi stream cannot report.
+NVAPI_STATE = {"ok": False, "inited": False, "last_refresh": 0.0,
+               "last_try": 0.0, "gpus": {}, "signature": (),
+               "load_error": "", "init_rc": None, "enum_rc": None}
+nvml_pci_info = (getattr(nv, "nvmlDeviceGetPciInfo_v3", None)
+                 or getattr(nv, "nvmlDeviceGetPciInfo", None))
 
 
 def acquire_single_instance():
@@ -136,6 +156,12 @@ def nvml_reinit(force=False):
     if rc == 0:
         NVML_STATE["ok"] = True
         NVML_STATE["ngpu"] = n.value
+        # A driver reinstall invalidates NVAPI's device handles too. Drop the
+        # cache and let the next read re-enumerate (NvAPI_Initialize itself is
+        # kept; re-enumeration is what matters).
+        NVAPI_STATE["gpus"] = {}
+        NVAPI_STATE["signature"] = ()
+        NVAPI_STATE["last_refresh"] = 0.0
         log("reinit: ok ngpu=%d" % n.value)
     else:
         NVML_STATE["ok"] = False
@@ -147,6 +173,160 @@ nvml_reinit(force=True)
 log("start ok=%s ngpu=%d" % (NVML_STATE["ok"], NVML_STATE["ngpu"]))
 
 
+# ------------------------------------------------- memory temp via NVAPI
+# `nvidia-smi --query-gpu=temperature.memory` is HBM-only on this stack: the
+# RTX 3090 reports N/A even though its GDDR6X memory-junction sensor exists.
+# NVAPI's (undocumented) NvAPI_GPU_GetThermalSensors exposes it, so use that
+# as a fallback for cards where the nvidia-smi stream has no memory reading.
+# NVAPI does not enumerate the CMPs in MCDM mode, so HBM cards are unaffected.
+NVAPI_TS_VERSION = 0x000200A8  # sizeof(NvThermalSensors) | (2 << 16)
+
+
+class NvThermalSensors(ctypes.Structure):
+    _pack_ = 8
+    _fields_ = [("version", ctypes.c_uint),
+                ("mask", ctypes.c_uint),
+                ("reserved", ctypes.c_int * 8),
+                ("temperatures", ctypes.c_int * 32)]
+
+
+_NVAPI = {"dll": None, "init": None, "enum": None, "therm": None,
+          "bus": None, "name": None}
+_NVAPI_INIT_T = ctypes.WINFUNCTYPE(ctypes.c_int)
+_NVAPI_ENUM_T = ctypes.WINFUNCTYPE(ctypes.c_int,
+                                   ctypes.POINTER(ctypes.c_void_p),
+                                   ctypes.POINTER(ctypes.c_uint))
+_NVAPI_THERM_T = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p,
+                                    ctypes.POINTER(NvThermalSensors))
+_NVAPI_BUS_T = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p,
+                                  ctypes.POINTER(ctypes.c_uint))
+_NVAPI_NAME_T = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p,
+                                   ctypes.c_char_p)
+
+NVAPI_FN_INIT = 0x0150E828
+NVAPI_FN_ENUM = 0xE5AC921F
+NVAPI_FN_THERMAL_SENSORS = 0x65FE3AAD
+NVAPI_FN_BUS_ID = 0x1BE0B8E5
+NVAPI_FN_FULL_NAME = 0xCEEE8E9F
+
+
+def nvapi_load():
+    """Resolve NVAPI's dynamic entry points once; False if unavailable."""
+    if _NVAPI["therm"] is not None:
+        return True
+    try:
+        dll = ctypes.WinDLL("nvapi64.dll")
+        q = dll.nvapi_QueryInterface
+        q.restype = ctypes.c_void_p
+        q.argtypes = [ctypes.c_uint]
+        init = _NVAPI_INIT_T(q(NVAPI_FN_INIT))
+        enum = _NVAPI_ENUM_T(q(NVAPI_FN_ENUM))
+        therm = _NVAPI_THERM_T(q(NVAPI_FN_THERMAL_SENSORS))
+        bus = _NVAPI_BUS_T(q(NVAPI_FN_BUS_ID))
+        name = _NVAPI_NAME_T(q(NVAPI_FN_FULL_NAME))
+    except Exception as e:
+        # Do not latch this: nvapi64.dll disappears briefly while the driver
+        # is being reinstalled. Keep retrying (rate-limited by the caller) but
+        # only log the first failure so a missing DLL cannot flood the log.
+        if not NVAPI_STATE["load_error"]:
+            NVAPI_STATE["load_error"] = repr(e)
+            log("nvapi load failed: %r" % (e,))
+        return False
+    _NVAPI.update(dll=dll, init=init, enum=enum, therm=therm, bus=bus,
+                  name=name)
+    NVAPI_STATE["load_error"] = ""
+    return True
+
+
+def nvapi_mem_index(name):
+    """Sensor-array slot of the memory-junction temperature (LHM's tables).
+
+    The NVAPI thermal array is not documented; 40/50-series moved the memory
+    sensor. Ampere (RTX 3090) uses slot 9, which is our case here.
+    """
+    if "RTX 50" in name:
+        return 2
+    if "RTX 40" in name:
+        return 7
+    return 9
+
+
+def nvapi_refresh(force=False):
+    """Re-enumerate NVAPI physical GPUs (cheap; cached for 30s)."""
+    now = time.time()
+    if not force:
+        if now - NVAPI_STATE["last_refresh"] < 30:
+            return
+        if now - NVAPI_STATE["last_try"] < 5:
+            return
+    NVAPI_STATE["last_try"] = now
+    if not nvapi_load():
+        NVAPI_STATE["ok"] = False
+        return
+    if not NVAPI_STATE["inited"]:
+        rc = _NVAPI["init"]()
+        if rc != 0:
+            NVAPI_STATE["ok"] = False
+            if NVAPI_STATE["init_rc"] != rc:
+                NVAPI_STATE["init_rc"] = rc
+                log("nvapi init rc=%d" % rc)
+            return
+        NVAPI_STATE["inited"] = True
+    handles = (ctypes.c_void_p * 64)()
+    cnt = ctypes.c_uint()
+    rc = _NVAPI["enum"](handles, ctypes.byref(cnt))
+    if rc != 0:
+        NVAPI_STATE["ok"] = False
+        if NVAPI_STATE["enum_rc"] != rc:
+            NVAPI_STATE["enum_rc"] = rc
+            log("nvapi enum rc=%d" % rc)
+        return
+    gpus = {}
+    sig = []
+    for i in range(min(cnt.value, 64)):
+        h = handles[i]
+        b = ctypes.c_uint()
+        if _NVAPI["bus"](h, ctypes.byref(b)) != 0:
+            continue
+        nm = ctypes.create_string_buffer(64)
+        name = ""
+        if _NVAPI["name"](h, nm) == 0:
+            name = nm.value.decode("utf-8", "replace")
+        idx = nvapi_mem_index(name)
+        gpus[b.value] = {"handle": h, "name": name, "mem_idx": idx}
+        sig.append((b.value, name, idx))
+    NVAPI_STATE.update(ok=True, gpus=gpus, last_refresh=now,
+                       init_rc=None, enum_rc=None)
+    sig = tuple(sig)
+    if sig != NVAPI_STATE["signature"]:
+        NVAPI_STATE["signature"] = sig
+        log("nvapi: %s" % (sig,))
+
+
+def nvapi_memtemp(bus):
+    """Memory-junction temp for a PCI bus, or None when unavailable."""
+    nvapi_refresh()
+    g = NVAPI_STATE["gpus"].get(bus)
+    if not g:
+        return None
+    idx = g["mem_idx"]
+    ts = NvThermalSensors()
+    ts.version = NVAPI_TS_VERSION
+    ts.mask = 1 << idx
+    try:
+        rc = _NVAPI["therm"](g["handle"], ctypes.byref(ts))
+    except Exception as e:
+        log("nvapi thermal failed: %r" % (e,))
+        NVAPI_STATE["last_refresh"] = 0.0
+        return None
+    if rc != 0:
+        # Stale handle after a driver reset, or a slot this GPU lacks.
+        NVAPI_STATE["last_refresh"] = 0.0
+        return None
+    v = ts.temperatures[idx]
+    return int(round(v / 256.0)) if v > 0 else None
+
+
 def read_gpu(idx):
     """Read one GPU via NVML; missing fields stay None."""
     d = {"index": idx}
@@ -156,6 +336,9 @@ def read_gpu(idx):
     if nv.nvmlDeviceGetHandleByIndex_v2(ctypes.c_uint(idx), ctypes.byref(h)) != 0:
         return d
     d["_alive"] = True
+    pci = NvmlPciInfo()
+    if nvml_pci_info is not None and nvml_pci_info(h, ctypes.byref(pci)) == 0:
+        d["bus"] = pci.bus
 
     name = ctypes.create_string_buffer(96)
     if nv.nvmlDeviceGetName(h, name, 96) == 0:
@@ -199,16 +382,27 @@ def read_gpu(idx):
         if v[0] is not None:
             d["temp"] = v[0]      # same value as NVML die temp, from stream
         d["mtemp"] = v[1]         # HBM memory temp, None when sensor says N/A
+    if d.get("mtemp") is None and d.get("bus") is not None:
+        # nvidia-smi says N/A for GDDR6X cards on Windows (RTX 3090); NVAPI
+        # still exposes the memory-junction sensor. CMPs are invisible to
+        # NVAPI here, so they keep the HBM value from the stream above.
+        m = nvapi_memtemp(d["bus"])
+        if m is not None:
+            d["mtemp"] = m
     return d
 
 
 def pretty_name(raw):
-    return "CMP 170HX" if "Graphics Device" in (raw or "") else (raw or "GPU")
+    raw = raw or "GPU"
+    if "CMP 170HX" in raw or "Graphics Device" in raw:
+        return "CMP 170HX"
+    return raw.replace("NVIDIA GeForce ", "").replace("NVIDIA ", "")
 
 # ------------------------------------------------- memory temp via nvidia-smi
-# NVML_TEMPERATURE_MEMORY is NOT_SUPPORTED on this stack (probe rc=2), but
-# `nvidia-smi --query-gpu=temperature.memory` reports HBM temp (dmon mtemp).
-# We keep one streaming child process and parse its 1 Hz lines.
+# NVML's temperature API has no memory sensor, so HBM temp is read from
+# `nvidia-smi --query-gpu=temperature.memory` (dmon mtemp) via one streaming
+# child process parsed at 1 Hz. GDDR6X cards report N/A there and are covered
+# by the NVAPI fallback in read_gpu().
 NSMI = {}
 NSMI_LOCK = threading.Lock()
 NSMI_CMD = ["nvidia-smi", "--query-gpu=index,temperature.gpu,"
@@ -414,8 +608,59 @@ TXT = "#c8cdd8"
 DIM = "#9aa3b2"
 LINE = "#2a2f3a"
 
+# window geometry: compact height tracks the GPU count, full width does too
+COMPACT_W = 440
+COMPACT_ROW_H = 33
+FULL_CARD_W = 250
+FULL_CARD_PAD = 12   # left + right padding of one full-mode column
+FULL_H = 492
+
 user32 = ctypes.WinDLL("user32")
 user32.GetSystemMetrics.restype = ctypes.c_int
+
+# Tk's -topmost puts the widget in the topmost band, which also places it
+# above the taskbar. We want the opposite z-order: above ordinary windows
+# (topmost) but below the taskbar, so dragging the widget over the taskbar
+# never hides the Start button / tray / clock.
+GA_ROOT = 2
+MONITOR_DEFAULTTONEAREST = 2
+GW_HWNDPREV = 3
+GWL_EXSTYLE = -20
+WS_EX_TOPMOST = 0x00000008
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+SWP_NOOWNERZORDER = 0x0200
+
+user32.GetAncestor.restype = ctypes.c_void_p
+user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+user32.FindWindowW.restype = ctypes.c_void_p
+user32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
+user32.FindWindowExW.restype = ctypes.c_void_p
+user32.FindWindowExW.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                 ctypes.c_wchar_p, ctypes.c_wchar_p]
+user32.GetWindow.restype = ctypes.c_void_p
+user32.GetWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+user32.GetWindowLongW.restype = ctypes.c_long
+user32.GetWindowLongW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+user32.SetWindowPos.restype = ctypes.c_int
+user32.SetWindowPos.argtypes = [ctypes.c_void_p, ctypes.c_void_p,
+                                ctypes.c_int, ctypes.c_int,
+                                ctypes.c_int, ctypes.c_int, ctypes.c_uint]
+user32.MonitorFromWindow.restype = ctypes.c_void_p
+user32.MonitorFromWindow.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+
+
+def taskbar_for(hwnd):
+    """Taskbar on this window's monitor (primary or secondary)."""
+    mon = user32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST)
+    h = user32.FindWindowExW(None, None, "Shell_SecondaryTrayWnd", None)
+    while h:
+        if mon and user32.MonitorFromWindow(
+                h, MONITOR_DEFAULTTONEAREST) == mon:
+            return h
+        h = user32.FindWindowExW(None, h, "Shell_SecondaryTrayWnd", None)
+    return user32.FindWindowW("Shell_TrayWnd", None)
 
 
 def desktop_metrics():
@@ -471,6 +716,9 @@ class MonitorApp:
         self.degraded_streak = 0
         self.stale_streak = 0
         self.nsmi_streak = 0
+        self.read_err_log = 0.0
+        self._tray_log = 0
+        self._zorder_err_log = 0.0
         self.ui_ngpu = NVML_STATE["ngpu"]
         self.compact = load_compact()
         self.moved = False  # user dragged the window: keep their position
@@ -513,19 +761,79 @@ class MonitorApp:
             w.bind("<ButtonPress-1>", self._press)
             w.bind("<B1-Motion>", self._move)
 
+        # Clicking or focusing the widget can raise it above the taskbar;
+        # re-assert the "below taskbar" z-order after any such event.
+        root.bind("<ButtonRelease-1>", self._zorder_soon, add="+")
+        root.bind("<FocusIn>", self._zorder_soon, add="+")
+
+        root.after(50, self.keep_below_taskbar)
         root.after(300, self.tick)
         self.tray_icon.visible = True
 
+    def _window_hwnd(self):
+        # Do NOT cache this: before the Tk window is mapped, winfo_id()
+        # resolves to a different (temporary) HWND, and caching that one made
+        # every later SetWindowPos a silent no-op on a dead handle.
+        try:
+            return user32.GetAncestor(self.root.winfo_id(), GA_ROOT)
+        except Exception:
+            return 0
+
+    def _zorder_soon(self, _e=None):
+        self.root.after_idle(self.keep_below_taskbar)
+
+    def keep_below_taskbar(self):
+        """Keep the widget above normal windows but below the taskbar.
+
+        Tk's -topmost puts the window in the topmost band; by default that
+        band is ordered above Shell_TrayWnd, so dragging the widget over the
+        taskbar hides the Start button / tray / clock. Inserting the window
+        directly after the taskbar's HWND keeps it above every non-topmost
+        window while letting the taskbar cover it. Re-asserted after clicks,
+        drags, show() and every tick because activation can raise it again.
+        """
+        if not self.visible:
+            return
+        hwnd = self._window_hwnd()
+        if not hwnd:
+            return
+        try:
+            tray = taskbar_for(hwnd)
+            if not tray:
+                return
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            if style & WS_EX_TOPMOST:
+                h = user32.GetWindow(hwnd, GW_HWNDPREV)
+                while h:
+                    if h == tray:
+                        return  # already below the taskbar
+                    h = user32.GetWindow(h, GW_HWNDPREV)
+            user32.SetWindowPos(hwnd, tray, 0, 0, 0, 0,
+                                SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+                                | SWP_NOOWNERZORDER)
+            if tray != self._tray_log:
+                self._tray_log = tray
+                log("z-order: hwnd 0x%x below taskbar 0x%x" % (hwnd, tray))
+        except Exception as e:
+            now = time.time()
+            if now - self._zorder_err_log > 30:
+                self._zorder_err_log = now
+                log("z-order failed: %r" % (e,))
+
     def apply_geometry(self):
+        n = max(self.ui_ngpu, 1)
         if self.compact:
             # height is derived from the GPU count, and it must be re-applied
             # whenever that count changes (driver reinstall brings the cards
             # back one at a time: a window sized while ngpu was still 0/1
             # silently clips the rows that appear later).
-            w = 440
-            h = 32 + 33 * max(self.ui_ngpu, 1) + 6
+            w = COMPACT_W
+            h = 32 + COMPACT_ROW_H * n + 6
         else:
-            w, h = 524, 492
+            # Width follows the column count. It used to be hardcoded to 524
+            # (= two 250px cards + padding), so a third GPU's column was laid
+            # out outside the window and simply never appeared.
+            w, h = (FULL_CARD_W + FULL_CARD_PAD) * n, FULL_H
         if self.moved:
             # Resize about the bottom-right corner instead of the top-left: a
             # widget parked in a screen corner grows out of that corner, and
@@ -626,7 +934,7 @@ class MonitorApp:
                                    "mtemp": mt, "mem": mm, "pw": mp})
                 self.canvases.append(None)
                 continue
-            col = tk.Frame(self.body, bg=BG, width=250)
+            col = tk.Frame(self.body, bg=BG, width=FULL_CARD_W)
             if not self.compact:
                 col.configure(height=444)
                 col.pack_propagate(False)
@@ -671,6 +979,7 @@ class MonitorApp:
             self.moved = True
             self.root.geometry("+%d+%d" % (e.x_root - self._drag[0],
                                            e.y_root - self._drag[1]))
+            self._zorder_soon()
 
     def hide(self):
         self.visible = False
@@ -683,6 +992,7 @@ class MonitorApp:
         if self.moved:
             # the screen may have changed while we were hidden
             self.ensure_on_screen()
+        self.root.after_idle(self.keep_below_taskbar)
 
     def toggle(self):
         if self.visible:
@@ -722,7 +1032,19 @@ class MonitorApp:
         with_data = 0
         healthy = 0
         for i in range(max(NVML_STATE["ngpu"], 1)):
-            g = read_gpu(i)
+            try:
+                g = read_gpu(i)
+            except Exception as e:
+                # A stale NVML handle can raise OSError (access violation)
+                # while the driver is torn down/reinstalled. Letting it escape
+                # _tick skipped the fail/degraded counters below, so NVML was
+                # never re-initialized and the app crashed once a second
+                # forever. Treat it as a missing read and let recovery run.
+                g = {}
+                now = time.time()
+                if now - self.read_err_log > 30:
+                    self.read_err_log = now
+                    log("read gpu%d failed: %r" % (i, e))
             if g.get("temp") is not None or g.get("name"):
                 with_data += 1
             if (g.get("temp") is not None
@@ -847,6 +1169,7 @@ class MonitorApp:
             pass
 
         self._check_display()
+        self.keep_below_taskbar()  # activation may have raised us again
 
     def draw_graph(self, i):
         cv = self.canvases[i]

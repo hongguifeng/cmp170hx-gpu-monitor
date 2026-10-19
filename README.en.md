@@ -2,16 +2,19 @@
 
 [![Build Windows EXE](https://github.com/hongguifeng/cmp170hx-gpu-monitor/actions/workflows/build-exe.yml/badge.svg)](https://github.com/hongguifeng/cmp170hx-gpu-monitor/actions/workflows/build-exe.yml)
 
-A small GPU monitoring utility for **CMP 170HX × 2 in MCDM mode**.
+A small GPU monitoring utility for **CMP 170HX × 2 in MCDM mode**; ordinary GeForce cards
+in the same machine (e.g. an RTX 3090) are shown as well.
 
 📖 Chinese documentation: [README.md](README.md) · this file is the English version.
 
 **Download the exe**: the rolling pre-release **[ci-latest](https://github.com/hongguifeng/cmp170hx-gpu-monitor/releases/tag/ci-latest)** — its asset is the `GPU-Monitor.exe` packaged by CI (public download, no login, replaced on every push to `master`).
 
-In MCDM mode, NVAPI-based tools (GPU-Z, LibreHardwareMonitor, ...) **cannot see the card at all**.
-This tool talks over the **NVML channel** (the same source `nvidia-smi` uses), so it reliably reads
+In MCDM mode, NVAPI-based tools (GPU-Z, LibreHardwareMonitor, ...) **cannot see the two CMP cards at all**.
+This tool talks over the **NVML channel** (the same source `nvidia-smi` uses) for them, so it reliably reads
 core temperature, HBM memory temperature, power draw and VRAM usage — and it reconnects by itself
 after the NVIDIA driver is uninstalled and reinstalled (the unlock procedure keeps swapping the driver).
+For an ordinary GeForce card in the same machine it additionally uses NVAPI to read the GDDR6X
+memory-junction temperature.
 
 ## UI preview
 
@@ -40,15 +43,21 @@ Web dashboard (`gpu-monitor.py`, optional, see below):
   (compact / full) can be switched, and the preference persists across restarts (`compact.flag`)
   - by default it sits flush in the bottom-right corner: its right edge on the screen edge and its
     bottom edge on the taskbar's top (it follows the taskbar's height and docked side)
+  - **z-order** — always above ordinary windows but below the taskbar, so dragging it over the
+    taskbar area never covers the Start button / tray / clock
   - resizes (switching layout or a change in the GPU count) are anchored to the **bottom-right**
     corner, so a window you placed stays exactly where you put it
   - after a display resolution / monitor switch the window is re-placed and always ends up inside
     the desktop (log keyword `display change`)
 - **Per-GPU readings** (NVML) — name, core temperature, GPU / memory clocks, utilisation, fan,
   VRAM usage, live power draw and power limit
-- **HBM memory temperature** — NVML's `TEMPERATURE_MEMORY` returns `NOT_SUPPORTED` on this platform,
-  so the value is obtained by a long-lived `nvidia-smi -l 1` streaming process that parses
-  `temperature.memory` (entries expire after 5 seconds, which rules out "frozen" stale temperatures)
+- **Full-mode layout scales with the GPU count** — one 250px column per card, so three GPUs get a
+  786px-wide window instead of having the third column clipped outside the old fixed 524px window
+- **Memory temperature (HBM / GDDR6X)** — HBM temp comes from a long-lived `nvidia-smi -l 1`
+  streaming process parsing `temperature.memory` (entries expire after 5 seconds, which rules out
+  "frozen" stale temperatures); Windows nvidia-smi reports `N/A` for GDDR6X cards such as the
+  RTX 3090, so those are read through NVAPI's `NvAPI_GPU_GetThermalSensors` and matched to the
+  NVML device by PCI bus number
 - **Survives driver removal** — three self-healing paths: all readings dead, individual GPUs degraded,
   or the NVML device list gone stale (cross-checked against a fresh nvidia-smi enumeration); each of
   them forces NVML to be rebuilt, so monitoring comes back after a driver reinstall

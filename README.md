@@ -2,15 +2,16 @@
 
 [![Build Windows EXE](https://github.com/hongguifeng/cmp170hx-gpu-monitor/actions/workflows/build-exe.yml/badge.svg)](https://github.com/hongguifeng/cmp170hx-gpu-monitor/actions/workflows/build-exe.yml)
 
-针对 **CMP 170HX × 2（MCDM 模式）** 的显卡监控小工具。
+针对 **CMP 170HX × 2（MCDM 模式）** 的显卡监控小工具；同机混插普通 GeForce 卡（如 RTX 3090）时也会一并显示。
 
 📖 英文版文档：[README.en.md](README.en.md)
 
 **直接下载 exe**：Releases 页的滚动预发布版 **[ci-latest](https://github.com/hongguifeng/cmp170hx-gpu-monitor/releases/tag/ci-latest)**，附件就是 CI 打包好的 `GPU-Monitor.exe`（免登录下载，每次推 `master` 自动覆盖）。
 
-在 MCDM 模式下，基于 NVAPI 的工具（GPU-Z、LibreHardwareMonitor 等）**完全看不到显卡**。
-本工具走 **NVML 通道**（与 `nvidia-smi` 同源），稳定读取核心温度、HBM 存温、功耗、显存占用等指标，
-并能在驱动被卸载/重装（如解锁流程会反复拆装 NVIDIA 驱动）后自动重连恢复。
+在 MCDM 模式下，基于 NVAPI 的工具（GPU-Z、LibreHardwareMonitor 等）**看不到两张 CMP**。
+本工具对 CMP 走 **NVML 通道**（与 `nvidia-smi` 同源），稳定读取核心温度、HBM 存温、功耗、显存占用等指标，
+并能在驱动被卸载/重装（如解锁流程会反复拆装 NVIDIA 驱动）后自动重连恢复；
+对同机普通 GeForce 卡则额外用 NVAPI 读取 GDDR6X 的显存结温。
 
 ## 界面预览
 
@@ -36,10 +37,12 @@
 - **托盘常驻**：图标实时显示最高温；单击托盘 = 显示 / 隐藏悬浮窗
 - **悬浮置顶窗**：可拖动标题栏移动；`—` 隐藏；「精简 / 完全」两种布局可切换，偏好跨重启持久化（`compact.flag`）
   - 默认贴在屏幕右下角：右边缘贴屏幕右沿、下边缘贴任务栏上沿（跟随任务栏高度 / 停靠位置变化）
+  - **层级**：始终位于普通窗口之上，但排在任务栏之下——拖到任务栏区域时任务栏会盖住它，不会挡住开始菜单 / 托盘 / 时间
   - 改尺寸（切换布局或显卡数变化）时以**右下角**为锚点，用户摆好的位置不会被弹走
   - 切换显示器分辨率 / 拔掉显示器后自动重新落位，控件始终留在桌面内（日志关键字 `display change`）
 - **每卡读取**（NVML）：名称、核心温度、GPU/显存频率、利用率、风扇、显存占用、实时功耗与功耗上限
-- **HBM 存温**：NVML 的 `TEMPERATURE_MEMORY` 在本平台返回 `NOT_SUPPORTED`，改由常驻 `nvidia-smi -l 1` 流式进程解析 `temperature.memory`（条目 5 秒过期，杜绝"冻结"的假温度）
+- **完全模式布局随卡数扩展**：每卡一列（250px + 间距），3 张卡时窗口自动变成 786px 宽，不会再把第 3 列裁到窗口外
+- **存温（HBM / GDDR6X）**：CMP 的 HBM 存温由常驻 `nvidia-smi -l 1` 流解析 `temperature.memory`（条目 5 秒过期，杜绝"冻结"的假温度）；Windows 下 nvidia-smi 对 RTX 3090 等 GDDR6X 卡返回 `N/A`，此类卡改由 NVAPI 的 `NvAPI_GPU_GetThermalSensors` 读取显存结温，并按 PCI 总线号与 NVML 卡片对应
 - **抗驱动拆装**：三路自愈 —— 全部读数死亡、部分卡退化、NVML 设备列表过期（借 nvidia-smi 新枚举交叉校验），均会触发 NVML 强制重建，驱动重装后监控自动回归
 - **开机自启**：托盘菜单勾选写入 `HKCU\...\Run`，可随驱动重连
 - **看门狗**：`watchdog.ps1` 每 10 秒查活，进程意外死亡自动拉起；通过托盘「退出」写入 `no-restart.flag` 后看门狗尊重退出意图
