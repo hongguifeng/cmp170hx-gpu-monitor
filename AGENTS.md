@@ -175,10 +175,10 @@ GDDR6X（如 RTX 3090）的存温走 NVAPI。主要文件：
 ### 悬浮窗要「普通窗口之上、任务栏之下」
 
 - 需求：`-topmost` 会把窗口放进 topmost 带，默认排在 `Shell_TrayWnd` 之上；拖到任务栏上会盖住开始菜单 / 托盘 / 时间。
-- 做法：保持 `WS_EX_TOPMOST`，但用 `SetWindowPos(hwnd, taskbar, 0,0,0,0, SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE|SWP_NOOWNERZORDER)` 把窗口插到任务栏之后（z-order 下方）。taskbar 用 `FindWindowW("Shell_TrayWnd")`；多屏先用 `MonitorFromWindow` 匹配 `Shell_SecondaryTrayWnd`，没有再用主任务栏。
+- 做法：先确保窗口在 topmost 带（`SetWindowPos(hwnd, HWND_TOPMOST, ..., SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE|SWP_NOOWNERZORDER)`），然后**仅当 taskbar 自身也带 `WS_EX_TOPMOST` 时**才用 `SetWindowPos(hwnd, taskbar, ...)` 把它插到任务栏之后（z-order 下方）。taskbar 用 `FindWindowW("Shell_TrayWnd")`；多屏先用 `MonitorFromWindow` 匹配 `Shell_SecondaryTrayWnd`，没有再用主任务栏。taskbar 不是 topmost 时保持纯置顶，绝不为了“在任务栏下面”而掉出 topmost 带。
 - 维护：点击 / `root.lift()` / `show()` 会把窗口抬回任务栏之上，所以要在 `<ButtonRelease-1>`、`<FocusIn>`、拖动 `_move`、`show()` 和每秒 `_tick` 里重新校正。校正前先沿 `GW_HWNDPREV` 向上找 taskbar：找到说明已经在下面，直接返回，避免无谓重排。
-- 验证：用 `GetTopWindow` + `GetWindow(GW_HWNDNEXT)` 枚举 z-order，app 的 index 应大于 taskbar（如 app=4、tray=3），且两者都带 `WS_EX_TOPMOST`；`root.lift()` 后 app 会变成 3、tray 4，调用 `keep_below_taskbar()` 后恢复。把窗口移到任务栏区域截图，任务栏应完整盖住窗口。
-- 坑：`SetWindowPos` 的 `hWndInsertAfter` 必须是 topmost 的 taskbar；若传普通窗口，目标窗口会被改成非 topmost。
+- 验证：用 `GetTopWindow` + `GetWindow(GW_HWNDNEXT)` 枚举 z-order，taskbar 为 topmost 时 app 的 index 应大于 taskbar（如 app=6、tray=5），且两者都带 `WS_EX_TOPMOST`；用 `SetWindowPos(tray, HWND_NOTOPMOST, ...)` 模拟任务栏失去 topmost（分辨率切换 / Explorer 重启后会出现），此时 app 必须仍是 `WS_EX_TOPMOST`、index 小于所有普通窗口，日志写 `keeping widget topmost`；恢复 taskbar topmost 后再自动变回在任务栏下面。
+- 坑：`SetWindowPos` 的 `hWndInsertAfter` 必须是 topmost 的 taskbar；若传非 topmost 的 taskbar，目标窗口会被改成非 topmost —— 这正是“有时候不置顶”的根因：任务栏在分辨率切换 / Explorer 重启 / 全屏工具之后可能没有 `WS_EX_TOPMOST`，旧代码仍然按它插队，于是悬浮窗被降级到普通窗口层，下一秒 tick 又继续把它按在下面。
 - 坑：不要在窗口映射前缓存 `GetAncestor(winfo_id(), GA_ROOT)` 的 HWND。Tk 映射后顶层 HWND 会变，缓存的旧句柄让后续 `SetWindowPos` 静默无效（日志还显示已设置成功）。每次现取；实测 `after(50)` 时拿到的 HWND 与最终可见窗口不同。
 
 ### 分层窗口截图会有残影，改用 PrintWindow

@@ -44,7 +44,9 @@ Web dashboard (`gpu-monitor.py`, optional, see below):
   - by default it sits flush in the bottom-right corner: its right edge on the screen edge and its
     bottom edge on the taskbar's top (it follows the taskbar's height and docked side)
   - **z-order** — always above ordinary windows but below the taskbar, so dragging it over the
-    taskbar area never covers the Start button / tray / clock
+    taskbar area never covers the Start button / tray / clock; if the taskbar itself is not a
+    topmost window (some fullscreen / remote-desktop / Explorer-restart states), the widget falls
+    back to plain topmost rather than ending up under ordinary windows
   - resizes (switching layout or a change in the GPU count) are anchored to the **bottom-right**
     corner, so a window you placed stays exactly where you put it
   - after a display resolution / monitor switch the window is re-placed and always ends up inside

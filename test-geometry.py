@@ -116,7 +116,12 @@ def main():
     ok &= [id(c) for c in app.cards] == before and h3 == h2
 
     print("[4] user-moved window keeps its bottom-right corner on resize")
-    root.geometry("+3000+1500")
+    # Place it on-screen and leave room to grow to the 3-card full width.
+    # (Hardcoding +3000+1500 broke on a 2560x1600 display.)
+    _, _, vx, vy, vw, vh = m.desktop_metrics()
+    mx = vx + max(0, min(3000, vw - 900))
+    my = vy + max(0, min(1500, vh - 400))
+    root.geometry("+%d+%d" % (mx, my))
     app.moved = True
     root.update()
     x0, y0 = root.winfo_x(), root.winfo_y()

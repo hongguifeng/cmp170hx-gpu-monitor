@@ -631,6 +631,7 @@ SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOACTIVATE = 0x0010
 SWP_NOOWNERZORDER = 0x0200
+HWND_TOPMOST = ctypes.c_void_p(-1)
 
 user32.GetAncestor.restype = ctypes.c_void_p
 user32.GetAncestor.argtypes = [ctypes.c_void_p, ctypes.c_uint]
@@ -717,7 +718,7 @@ class MonitorApp:
         self.stale_streak = 0
         self.nsmi_streak = 0
         self.read_err_log = 0.0
-        self._tray_log = 0
+        self._zorder_state = None
         self._zorder_err_log = 0.0
         self.ui_ngpu = NVML_STATE["ngpu"]
         self.compact = load_compact()
@@ -783,14 +784,16 @@ class MonitorApp:
         self.root.after_idle(self.keep_below_taskbar)
 
     def keep_below_taskbar(self):
-        """Keep the widget above normal windows but below the taskbar.
+        """Keep the widget above normal windows, below the taskbar if possible.
 
-        Tk's -topmost puts the window in the topmost band; by default that
-        band is ordered above Shell_TrayWnd, so dragging the widget over the
-        taskbar hides the Start button / tray / clock. Inserting the window
-        directly after the taskbar's HWND keeps it above every non-topmost
-        window while letting the taskbar cover it. Re-asserted after clicks,
-        drags, show() and every tick because activation can raise it again.
+        Tk's -topmost puts the window in the topmost band. That band is usually
+        ordered above Shell_TrayWnd, so inserting the widget right after the
+        taskbar lets the taskbar cover it. But the shell's taskbar is not
+        always WS_EX_TOPMOST (resolution switches, Explorer restarts and some
+        fullscreen helpers drop it); inserting after a non-topmost window
+        would demote the widget into the normal band, where every other
+        window covers it. So re-assert topmost first, and only go below the
+        taskbar when the taskbar itself is topmost.
         """
         if not self.visible:
             return
@@ -798,21 +801,51 @@ class MonitorApp:
         if not hwnd:
             return
         try:
-            tray = taskbar_for(hwnd)
-            if not tray:
-                return
             style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-            if style & WS_EX_TOPMOST:
-                h = user32.GetWindow(hwnd, GW_HWNDPREV)
-                while h:
-                    if h == tray:
-                        return  # already below the taskbar
-                    h = user32.GetWindow(h, GW_HWNDPREV)
+            if not style & WS_EX_TOPMOST:
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+                                    | SWP_NOOWNERZORDER)
+                style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
+            tray = taskbar_for(hwnd)
+            tray_topmost = bool(
+                tray and (user32.GetWindowLongW(tray, GWL_EXSTYLE)
+                          & WS_EX_TOPMOST))
+            if not (style & WS_EX_TOPMOST):
+                # Could not restore topmost: report (rate-limited) and retry
+                # on the next tick.
+                now = time.time()
+                if now - self._zorder_err_log > 30:
+                    self._zorder_err_log = now
+                    log("z-order: widget lost topmost and cannot restore it")
+                return
+            if not tray or not tray_topmost:
+                # A topmost window cannot be below a non-topmost taskbar
+                # without leaving the topmost band. Topmost wins: never let
+                # ordinary windows cover the widget.
+                state = ("topmost", tray)
+                if state != self._zorder_state:
+                    self._zorder_state = state
+                    log("z-order: taskbar 0x%x not topmost; keeping widget "
+                        "topmost" % (tray or 0))
+                return
+            # Already directly below the taskbar? Walk the z-order upwards.
+            h = user32.GetWindow(hwnd, GW_HWNDPREV)
+            while h:
+                if h == tray:
+                    state = ("below", tray)
+                    if state != self._zorder_state:
+                        self._zorder_state = state
+                        log("z-order: hwnd 0x%x below taskbar 0x%x"
+                            % (hwnd, tray))
+                    return
+                h = user32.GetWindow(h, GW_HWNDPREV)
             user32.SetWindowPos(hwnd, tray, 0, 0, 0, 0,
                                 SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
                                 | SWP_NOOWNERZORDER)
-            if tray != self._tray_log:
-                self._tray_log = tray
+            state = ("below", tray)
+            if state != self._zorder_state:
+                self._zorder_state = state
                 log("z-order: hwnd 0x%x below taskbar 0x%x" % (hwnd, tray))
         except Exception as e:
             now = time.time()
