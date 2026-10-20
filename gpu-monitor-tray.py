@@ -86,18 +86,40 @@ QUIT_FLAG = os.path.join(APP_DIR, "no-restart.flag")
 WATCHDOG_PS1 = os.path.join(APP_DIR, "watchdog.ps1")
 MODE_FLAG = os.path.join(APP_DIR, "compact.flag")
 
+# Three layouts, cycled by the single title-bar button: 完全 -> 精简 -> 极简.
+# The flag file keeps the choice across restarts. Its *content* now matters:
+# an empty (or unreadable) file means compact, which is exactly what older
+# builds wrote, so an existing compact.flag keeps working unchanged.
+MODE_FULL = 0
+MODE_COMPACT = 1
+MODE_ULTRA = 2
+MODE_NAMES = {MODE_FULL: "完全", MODE_COMPACT: "精简", MODE_ULTRA: "极简"}
+MODE_NEXT = {MODE_FULL: MODE_COMPACT, MODE_COMPACT: MODE_ULTRA,
+             MODE_ULTRA: MODE_FULL}
+ULTRA_FLAG_TEXT = b"ultra"
 
-def load_compact():
-    """Compact-mode preference persists across restarts (file presence)."""
-    return os.path.exists(MODE_FLAG)
 
-
-def save_compact(on):
+def load_mode():
+    """Layout preference persists across restarts via compact.flag."""
     try:
-        if on:
+        if os.path.exists(MODE_FLAG):
+            txt = open(MODE_FLAG, "rb").read().strip().lower()
+            return MODE_ULTRA if txt == ULTRA_FLAG_TEXT else MODE_COMPACT
+    except OSError:
+        return MODE_COMPACT   # file there but unreadable: it meant compact
+    return MODE_FULL
+
+
+def save_mode(mode):
+    try:
+        if mode == MODE_FULL:
+            if os.path.exists(MODE_FLAG):
+                os.remove(MODE_FLAG)
+        elif mode == MODE_COMPACT:
             open(MODE_FLAG, "w").close()
-        elif os.path.exists(MODE_FLAG):
-            os.remove(MODE_FLAG)
+        else:
+            with open(MODE_FLAG, "wb") as f:
+                f.write(ULTRA_FLAG_TEXT)
     except OSError:
         pass
 _LOG_LOCK = threading.Lock()
@@ -614,6 +636,41 @@ COMPACT_ROW_H = 33
 FULL_CARD_W = 250
 FULL_CARD_PAD = 12   # left + right padding of one full-mode column
 FULL_H = 492
+# Ultra mode packs every GPU into one line: "0 12G 250W | 1 11G 220W". Only
+# the memory in use and the power draw survive, both rounded to whole numbers
+# and with no tag in front of them, and there is no title bar above them --
+# just this one line.
+ULTRA_SEG_W = 90       # every GPU gets a cell of exactly this width, so a
+                       # figure changing on one card cannot shove the others
+                       # sideways. Sized for the widest reading we expect and
+                       # nothing more: index 13+10, "99G" 25, "999W" 34+8
+ULTRA_SEP_W = 6        # divider between two cells: 2px bar plus its 2+2 padding
+ULTRA_SEP_COLOR = "#4a5262"   # brighter than the box border, so the cells are
+                              # clearly split apart without shouting at the data
+ULTRA_PAD = 12         # left + right padding around the single row
+ULTRA_BTN_W = 62       # — plus the layout button, with their padding
+ULTRA_MIN_W = 176      # floor: one cell and the two buttons still fit
+ULTRA_ROW_H = 26       # the line itself, tall enough for the dash button
+ULTRA_H = ULTRA_ROW_H + 2   # plus the 1px padding above and below it
+
+
+def fmt_power_w(p):
+    """Whole watts; past 999 W fall back to whole kW (no decimals either)."""
+    try:
+        p = float(p)
+    except (TypeError, ValueError):
+        return "--"
+    if p >= 1000.0:
+        return "%dkW" % int(round(p / 1000.0))
+    return "%dW" % int(round(p))
+
+
+def fmt_mem_used(used):
+    """Memory in use in whole gigabytes with its unit, e.g. 12G."""
+    try:
+        return "%dG" % int(round(float(used)))
+    except (TypeError, ValueError):
+        return "--"
 
 user32 = ctypes.WinDLL("user32")
 user32.GetSystemMetrics.restype = ctypes.c_int
@@ -708,6 +765,61 @@ def work_area():
     return (r.left, r.top, r.right, r.bottom)
 
 
+user32.GetWindowRect.restype = ctypes.c_int
+user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT)]
+
+
+def window_rect(hwnd):
+    """A window's frame as (left, top, right, bottom), or None on failure."""
+    r = _RECT()
+    if not user32.GetWindowRect(hwnd, ctypes.byref(r)):
+        return None
+    return (r.left, r.top, r.right, r.bottom)
+
+
+# How much of the widget the taskbar is allowed to hide before the widget
+# climbs back on top of it, and how wide a strip of it has to stay visible in
+# order to be worth leaving under the taskbar in the first place.
+TASKBAR_COVER_LIMIT = 0.6
+TASKBAR_KEEP_VISIBLE_PX = 12
+
+
+def covered_share(win, barrier):
+    """Share (0..1) of the window that sits underneath the barrier rectangle.
+
+    Living below the taskbar is the whole point of the z-order dance: the
+    taskbar paints over the widget and the start menu, the tray and the clock
+    stay usable. That only works while the widget still sticks out. Once the
+    taskbar covers most of it there is nothing left to click, and the monitor
+    is unreachable until it is dragged back out -- so this is what the z-order
+    code measures.
+    """
+    if not win or not barrier:
+        return 0.0
+    area = (win[2] - win[0]) * (win[3] - win[1])
+    if area <= 0:
+        return 0.0
+    w = min(win[2], barrier[2]) - max(win[0], barrier[0])
+    h = min(win[3], barrier[3]) - max(win[1], barrier[1])
+    return max(w, 0) * max(h, 0) / float(area)
+
+
+def visible_strip(win, barrier):
+    """Thickest strip of the window that still sticks out of the barrier.
+
+    A 356x28 line with 8px left above the taskbar is technically clickable but
+    hopeless to grab, so coverage alone is not enough to decide: the strip that
+    remains outside the taskbar matters just as much.
+    """
+    if not win or not barrier:
+        return 0
+    return max(
+        max(barrier[1], win[1]) - win[1],    # above the barrier
+        win[3] - min(barrier[3], win[3]),    # below it
+        max(barrier[0], win[0]) - win[0],    # left of it
+        win[2] - min(barrier[2], win[2]))    # right of it
+
+
 class MonitorApp:
     def __init__(self, root, tray_icon):
         self.root = root
@@ -721,7 +833,8 @@ class MonitorApp:
         self._zorder_state = None
         self._zorder_err_log = 0.0
         self.ui_ngpu = NVML_STATE["ngpu"]
-        self.compact = load_compact()
+        self.mode = load_mode()
+        self.ultra_row = None  # set by build_cards; apply_geometry reads it
         self.moved = False  # user dragged the window: keep their position
         self.last_desktop = (desktop_metrics(), work_area())
 
@@ -733,23 +846,30 @@ class MonitorApp:
         self.apply_geometry()
 
         self._drag = None
-        header = tk.Frame(root, bg=CARD, height=32)
+        header = self.header = tk.Frame(root, bg=CARD, height=32)
         header.pack(fill="x", side="top")
         header.pack_propagate(False)
-        tk.Label(header, text=" GPU Monitor", bg=CARD, fg=FG,
-                 font=("Segoe UI", 10, "bold")).pack(side="left")
+        self.title_lbl = tk.Label(header, text=" GPU Monitor", bg=CARD, fg=FG,
+                                  font=("Segoe UI", 10, "bold"))
+        self.title_lbl.pack(side="left")
         self.status = tk.Label(header, text="", bg=CARD, fg=DIM,
                                font=("Segoe UI", 9))
         self.status.pack(side="left")
-        tk.Button(header, text="—", command=self.hide, bg=CARD, fg=DIM,
-                  relief="flat", bd=0, font=("Segoe UI", 11),
-                  activebackground=LINE, activeforeground=FG).pack(
-            side="right", padx=(0, 8), pady=2)
-        self.btn_mode = tk.Button(header, text="完全" if self.compact else "精简",
-                                  command=self.toggle_compact, bg=CARD, fg=DIM,
+        self.btn_hide = tk.Button(header, text="—", command=self.hide, bg=CARD,
+                                  fg=DIM, relief="flat", bd=0,
+                                  font=("Segoe UI", 11),
+                                  activebackground=LINE, activeforeground=FG)
+        self.btn_hide.pack(side="right", padx=(0, 8), pady=2)
+        # The one button walks the whole ring of layouts; its label names the
+        # mode you get by clicking it, never the one you are already in.
+        self.btn_mode = tk.Button(header, text=MODE_NAMES[MODE_NEXT[self.mode]],
+                                  command=self.cycle_mode, bg=CARD, fg=DIM,
                                   relief="flat", bd=0, font=("Segoe UI", 9),
                                   activebackground=LINE, activeforeground=FG)
         self.btn_mode.pack(side="right", padx=(0, 2), pady=2)
+        # Ultra mode has its own pair, built inside the line itself.
+        self.ultra_btn_hide = None
+        self.ultra_btn_mode = None
 
         self.body = tk.Frame(root, bg=BG)
         self.body.pack(fill="both", expand=True)
@@ -829,6 +949,26 @@ class MonitorApp:
                     log("z-order: taskbar 0x%x not topmost; keeping widget "
                         "topmost" % (tray or 0))
                 return
+            # Partial overlap is the intended look; being swallowed whole is
+            # not. If the taskbar would hide most of the widget, or leave less
+            # of it sticking out than one can aim at, climb back on top of the
+            # taskbar and stay there until the widget is dragged clear again.
+            wr = window_rect(hwnd)
+            tr = window_rect(tray)
+            share = covered_share(wr, tr)
+            strip = visible_strip(wr, tr)
+            if share >= TASKBAR_COVER_LIMIT or (share > 0.0
+                                               and strip < TASKBAR_KEEP_VISIBLE_PX):
+                state = ("above", tray)
+                if state != self._zorder_state:
+                    self._zorder_state = state
+                    log("z-order: taskbar covers %.0f%% of the widget, "
+                        "%dpx left of it visible; keeping it above so it "
+                        "stays clickable" % (share * 100, strip))
+                user32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0,
+                                    SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+                                    | SWP_NOOWNERZORDER)
+                return
             # Already directly below the taskbar? Walk the z-order upwards.
             h = user32.GetWindow(hwnd, GW_HWNDPREV)
             while h:
@@ -855,7 +995,21 @@ class MonitorApp:
 
     def apply_geometry(self):
         n = max(self.ui_ngpu, 1)
-        if self.compact:
+        if self.mode == MODE_ULTRA:
+            # Everything sits on one line, so the height is constant and only
+            # the width has to follow the GPU count. Never go below the title
+            # bar's own needs, or the status text starts to overlap the buttons.
+            w = max(ULTRA_MIN_W,
+                    ULTRA_PAD + ULTRA_SEG_W * n + ULTRA_SEP_W * (n - 1)
+                    + ULTRA_BTN_W)
+            if self.ultra_row is not None:
+                self.root.update_idletasks()
+                # Live widgets win over the estimate: a machine without
+                # Consolas falls back to a wider font and the line would
+                # otherwise be clipped at the right edge.
+                w = max(w, self._ultra_need())
+            h = ULTRA_H
+        elif self.mode == MODE_COMPACT:
             # height is derived from the GPU count, and it must be re-applied
             # whenever that count changes (driver reinstall brings the cards
             # back one at a time: a window sized while ngpu was still 0/1
@@ -929,10 +1083,47 @@ class MonitorApp:
         self.last_desktop = m
         self.apply_geometry()
 
-    def toggle_compact(self):
-        self.compact = not self.compact
-        save_compact(self.compact)
-        self.btn_mode.config(text="完全" if self.compact else "精简")
+    def _bind_drag(self, w):
+        """Let any part of the ultra line move the window.
+
+        The compact/full layouts are dragged by their title bar. Ultra has no
+        title bar, so the line itself (and every label inside it) has to answer
+        the drag events -- Tk delivers them to the widget under the pointer,
+        not to the frame around it. Buttons are skipped: pressing one is a
+        click on a control, not a grab handle, and a jittering mouse would
+        otherwise shove the window across the desktop.
+        """
+        if isinstance(w, tk.Button):
+            return
+        w.bind("<ButtonPress-1>", self._press)
+        w.bind("<B1-Motion>", self._move)
+        for c in w.winfo_children():
+            self._bind_drag(c)
+
+    def _ultra_need(self):
+        """Width the ultra line asks for: fixed cells plus the two buttons.
+
+        Every GPU gets exactly ULTRA_SEG_W and never more, so this is pure
+        arithmetic -- no measuring labels, and the line cannot creep sideways
+        while the readings change.
+        """
+        n = len(self.cards)
+        w = ULTRA_PAD + ULTRA_SEG_W * n + ULTRA_SEP_W * max(n - 1, 0)
+        # — and the layout button sit at the right end of this very line, so
+        # they count towards its width too.
+        hide = self.ultra_btn_hide if self.ultra_btn_hide is not None \
+            else self.btn_hide
+        mode = self.ultra_btn_mode if self.ultra_btn_mode is not None \
+            else self.btn_mode
+        w += hide.winfo_reqwidth() + 6 + mode.winfo_reqwidth() + 2
+        return w
+
+    def cycle_mode(self):
+        old = MODE_NAMES[self.mode]
+        self.mode = MODE_NEXT[self.mode]
+        save_mode(self.mode)
+        log("mode: %s -> %s" % (old, MODE_NAMES[self.mode]))
+        self.btn_mode.config(text=MODE_NAMES[MODE_NEXT[self.mode]])
         self.build_cards(max(self.ui_ngpu, 1))
         self.apply_geometry()
 
@@ -941,11 +1132,89 @@ class MonitorApp:
             w.destroy()
         self.cards = []
         self.canvases = []
+        self.ultra_row = None
         self.hist = [deque(maxlen=HIST) for _ in range(n)]
         self.mhist = [deque(maxlen=HIST) for _ in range(n)]
         self.phist = [deque(maxlen=HIST) for _ in range(n)]
+        if self.mode == MODE_ULTRA:
+            # One single line for the whole fleet: 0 12G 250W | 1 11G 220W ...
+            # Only memory in use and power survive the shrink, both without
+            # decimals and with no tag in front of them -- the G and the W say
+            # which is which. GPUs are told apart by their index, painted in
+            # the same colour as that card's curve in full mode.
+            row = tk.Frame(self.body, bg=CARD, highlightbackground=LINE,
+                           highlightthickness=1)
+            row.configure(height=ULTRA_ROW_H)
+            row.pack_propagate(False)
+            row.pack(fill="x", padx=6, pady=1)
+            self.ultra_row = row
+            mono = ("Consolas", 9)
+            bold = ("Consolas", 9, "bold")
+            for i in range(n):
+                if i:
+                    tk.Frame(row, bg=ULTRA_SEP_COLOR, width=2).pack(
+                        side="left", padx=2, fill="y")
+                # One cell of its own, and its width is fixed. The whole point
+                # is that a reading changing on GPU 1 (29W -> 184W) never moves
+                # the numbers of GPU 2; each card owns its own slice of pixels.
+                cell = tk.Frame(row, bg=CARD, width=ULTRA_SEG_W,
+                                height=ULTRA_ROW_H)
+                cell.pack_propagate(False)
+                cell.pack(side="left", fill="y")
+                idx = tk.Label(cell, text=str(i), bg=CARD,
+                               fg=TEMP_COLORS[i % len(TEMP_COLORS)],
+                               font=("Segoe UI", 9, "bold"))
+                idx.pack(side="left", padx=(6, 4), fill="y")
+                # Memory in use is the figure you actually scan here, so it
+                # gets weight and the brightest ink on the line.
+                mu = tk.Label(cell, text="--", bg=CARD, fg=FG, font=bold,
+                              padx=0)
+                mu.pack(side="left", fill="y")
+                # Power sits next to it, quieter and in its own unit; that is
+                # what tells the two numbers apart now that the tags are gone.
+                mp = tk.Label(cell, text="--", bg=CARD, fg=TXT, font=mono)
+                mp.pack(side="left", padx=(4, 4), fill="y")
+                self.cards.append({"name": idx, "used": mu, "pw": mp,
+                                   "cell": cell})
+                self.canvases.append(None)
+            # This layout has no title bar at all: the title and the status
+            # text vanish with it, and — plus the layout button are built
+            # right into the line. Being its children, they are destroyed and
+            # rebuilt together with it, so nothing ever has to be reparented
+            # and a click lands exactly where it looks like it should.
+            self.title_lbl.pack_forget()
+            self.status.pack_forget()
+            self.btn_hide.pack_forget()
+            self.btn_mode.pack_forget()
+            self.header.pack_forget()
+            self.ultra_btn_hide = tk.Button(row, text="—", command=self.hide,
+                                            bg=CARD, fg=DIM, relief="flat",
+                                            bd=0, font=("Segoe UI", 10),
+                                            activebackground=LINE,
+                                            activeforeground=FG)
+            self.ultra_btn_hide.pack(side="right", padx=(0, 6), pady=0)
+            self.ultra_btn_mode = tk.Button(
+                row, text=MODE_NAMES[MODE_NEXT[self.mode]],
+                command=self.cycle_mode, bg=CARD, fg=DIM, relief="flat", bd=0,
+                font=("Segoe UI", 9), activebackground=LINE,
+                activeforeground=FG)
+            self.ultra_btn_mode.pack(side="right", padx=(0, 2), pady=0)
+            # No title bar to grab: the whole line moves the window.
+            self._bind_drag(row)
+            return
+        # The other two layouts get the title bar back with its own pair of
+        # buttons; the line's pair went away with the line.
+        self.ultra_btn_hide = None
+        self.ultra_btn_mode = None
+        # before=self.body matters: the body is packed first, so a header
+        # packed after it would end up at the bottom of the window.
+        self.header.pack(fill="x", side="top", before=self.body)
+        self.title_lbl.pack(side="left")
+        self.status.pack(side="left")
+        self.btn_hide.pack(side="right", padx=(0, 8), pady=2)
+        self.btn_mode.pack(side="right", padx=(0, 2), pady=2)
         for i in range(n):
-            if self.compact:
+            if self.mode == MODE_COMPACT:
                 # one dense row per GPU: name | temp | mem temp | mem | power
                 card = tk.Frame(self.body, bg=CARD, highlightbackground=LINE,
                                 highlightthickness=1)
@@ -968,9 +1237,8 @@ class MonitorApp:
                 self.canvases.append(None)
                 continue
             col = tk.Frame(self.body, bg=BG, width=FULL_CARD_W)
-            if not self.compact:
-                col.configure(height=444)
-                col.pack_propagate(False)
+            col.configure(height=444)
+            col.pack_propagate(False)
             col.pack(side="left", fill="both", expand=True,
                      padx=(8, 4 if i == 0 else 2) if i == 0 else (4, 8),
                      pady=8)
@@ -988,24 +1256,27 @@ class MonitorApp:
             info.pack(anchor="w", padx=10, pady=(0, 8))
             self.cards.append({"name": name, "temp": temp, "info": info})
 
-            cv = None
-            if not self.compact:
-                cv = tk.Canvas(col, bg=CARD, height=170, highlightthickness=0)
-                cv.pack(fill="x", pady=(6, 0))
-                leg = tk.Frame(col, bg=BG)
-                leg.pack(anchor="w", padx=2, pady=(3, 0))
-                tc = TEMP_COLORS[i % len(TEMP_COLORS)]
-                mc = MEM_COLORS[i % len(MEM_COLORS)]
-                for text, color in (("— 核温", tc), ("— 存温", mc),
-                                    ("┄ 功耗", PW_COLOR)):
-                    tk.Label(leg, text=text, bg=BG, fg=color,
-                             font=("Segoe UI", 9)).pack(side="left",
-                                                       padx=(0, 10))
+            # Full mode is the only layout that draws history graphs; compact
+            # and ultra never get past their own branches above.
+            cv = tk.Canvas(col, bg=CARD, height=170, highlightthickness=0)
+            cv.pack(fill="x", pady=(6, 0))
+            leg = tk.Frame(col, bg=BG)
+            leg.pack(anchor="w", padx=2, pady=(3, 0))
+            tc = TEMP_COLORS[i % len(TEMP_COLORS)]
+            mc = MEM_COLORS[i % len(MEM_COLORS)]
+            for text, color in (("— 核温", tc), ("— 存温", mc),
+                                ("┄ 功耗", PW_COLOR)):
+                tk.Label(leg, text=text, bg=BG, fg=color,
+                         font=("Segoe UI", 9)).pack(side="left",
+                                                   padx=(0, 10))
             self.canvases.append(cv)
 
     # window drag / visibility
     def _press(self, e):
-        self._drag = (e.x, e.y)
+        # Window-relative offset from absolute numbers: a label inside the
+        # ultra line reports its own e.x/e.y, which is not the window's origin.
+        self._drag = (e.x_root - self.root.winfo_x(),
+                      e.y_root - self.root.winfo_y())
 
     def _move(self, e):
         if self._drag:
@@ -1091,19 +1362,29 @@ class MonitorApp:
             self.mhist[i].append(m if m is not None else None)
             self.phist[i].append(p if p is not None else None)
             card = self.cards[i]
-            if t is not None:
-                col = "#ff5555" if t >= 80 else "#ffb020" if t >= 68 else "#3ddc84"
-                card["temp"].config(text="%d°C" % t, fg=col)
+            # An ultra card has no temperature label at all: the temperature is
+            # precisely what that layout throws away.
+            if "temp" in card:
+                if t is not None:
+                    col = "#ff5555" if t >= 80 else "#ffb020" if t >= 68 else "#3ddc84"
+                    card["temp"].config(text="%d°C" % t, fg=col)
+                else:
+                    card["temp"].config(text="--", fg=DIM)
+            if self.mode == MODE_ULTRA:
+                card["name"].config(text=str(i))
+            elif self.mode == MODE_COMPACT:
+                card["name"].config(text="GPU %d" % i)
             else:
-                card["temp"].config(text="--", fg=DIM)
-            card["name"].config(
-                text="GPU %d" % i if self.compact
-                else "GPU %d · %s" % (i, pretty_name(g.get("name"))))
+                card["name"].config(
+                    text="GPU %d · %s" % (i, pretty_name(g.get("name"))))
             mem = "%s / %s GB" % (g.get("mem_used", "?"), g.get("mem_total", "?"))
             pwtxt = ("%s / %s W" % (p, g.get("power_limit", "?"))
                      if p is not None else "--")
             mtxt = ("%d °C" % m) if m is not None else "--"
-            if self.compact:
+            if self.mode == MODE_ULTRA:
+                card["used"].config(text=fmt_mem_used(g.get("mem_used")))
+                card["pw"].config(text=fmt_power_w(p))
+            elif self.mode == MODE_COMPACT:
                 card["mtemp"].config(text="存温 %s" % mtxt)
                 card["mem"].config(text="显存 %s/%sG" % (
                     g.get("mem_used", "?"), g.get("mem_total", "?")))
@@ -1207,7 +1488,7 @@ class MonitorApp:
     def draw_graph(self, i):
         cv = self.canvases[i]
         if cv is None:
-            return  # compact mode: no graph
+            return  # compact / ultra mode: no graph
         cv.delete("all")
         w = int(cv.winfo_width() or 240)
         h = 170

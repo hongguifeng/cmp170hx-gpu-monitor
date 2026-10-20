@@ -23,6 +23,11 @@ System tray icon — always shows the temperature of the **hottest GPU** and cha
 
 ![Tray icons](docs/img/tray-icons.png)
 
+Always-on-top floating window · ultra mode (every GPU squeezed onto one line, memory in use in bold
+plus power draw, and not even a title bar):
+
+![Ultra mode](docs/img/window-ultra.png)
+
 Always-on-top floating window · compact mode (one row per GPU, stays out of the way):
 
 ![Compact mode](docs/img/window-compact.png)
@@ -39,14 +44,28 @@ Web dashboard (`gpu-monitor.py`, optional, see below):
 
 - **Tray-resident** — the icon shows the current maximum temperature in real time; a single click on the
   tray icon shows / hides the floating window
-- **Always-on-top floating window** — drag the title bar to move it; `—` hides it; two layouts
-  (compact / full) can be switched, and the preference persists across restarts (`compact.flag`)
+- **Always-on-top floating window** — one button cycles three layouts
+  (full → compact → ultra → full; the button is labelled with the layout the next click gives you);
+  `—` hides it; drag it to move; the preference persists across restarts (`compact.flag`: no file =
+  full, empty file = compact, the word `ultra` inside = ultra, so old flag files keep working)
+  - **ultra mode is a single line with no title bar at all**: every GPU shares that one line and keeps
+    only the memory in use (bold, whole gigabytes, e.g. `12G`) and the power draw (whole watts, e.g.
+    `250W`, rolling over to `1kW` past 1000W). Cards are told apart by their index, painted in the
+    colour of that card's curve. Any part of the line drags the window, and `—` plus the layout button
+    live at its right end; **every card gets a cell of exactly 90px** (sized to the widest reading we
+    expect -- `99G` memory plus `999W` draw, with nothing left over), split apart by a 2px divider that
+    is brighter than the box border, so a figure growing or shrinking on one card never shifts another
+    card's numbers (3 cards = 356px, 1 card = 176px) and the height stays 28px
   - by default it sits flush in the bottom-right corner: its right edge on the screen edge and its
     bottom edge on the taskbar's top (it follows the taskbar's height and docked side)
   - **z-order** — always above ordinary windows but below the taskbar, so dragging it over the
     taskbar area never covers the Start button / tray / clock; if the taskbar itself is not a
     topmost window (some fullscreen / remote-desktop / Explorer-restart states), the widget falls
     back to plain topmost rather than ending up under ordinary windows
+  - **but it is never swallowed whole**: once the taskbar would cover 60% of it, or leave less than
+    12px sticking out (nothing to aim at), the widget climbs back on top of the taskbar so it stays
+    clickable, and returns below it on the next tick once it is dragged clear (log keywords
+    `keeping it above` / `below taskbar`)
   - resizes (switching layout or a change in the GPU count) are anchored to the **bottom-right**
     corner, so a window you placed stays exactly where you put it
   - after a display resolution / monitor switch the window is re-placed and always ends up inside
@@ -140,4 +159,5 @@ So a usable exe is available without any local toolchain — the Releases page i
 
 - Graphs cover only the last **3 minutes** (180 one-second samples)
 - `Fan %` is unavailable on some BIOS / driver combinations (shown as `-- %`)
-- The floating window is borderless (`overrideredirect`), so it can only be dragged by its title bar
+- The floating window is borderless (`overrideredirect`): full and compact mode are dragged by their
+  title bar, ultra mode has none, so you drag the line itself

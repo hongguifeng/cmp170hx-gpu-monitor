@@ -176,6 +176,9 @@ GDDR6X（如 RTX 3090）的存温走 NVAPI。主要文件：
 
 - 需求：`-topmost` 会把窗口放进 topmost 带，默认排在 `Shell_TrayWnd` 之上；拖到任务栏上会盖住开始菜单 / 托盘 / 时间。
 - 做法：先确保窗口在 topmost 带（`SetWindowPos(hwnd, HWND_TOPMOST, ..., SWP_NOSIZE|SWP_NOMOVE|SWP_NOACTIVATE|SWP_NOOWNERZORDER)`），然后**仅当 taskbar 自身也带 `WS_EX_TOPMOST` 时**才用 `SetWindowPos(hwnd, taskbar, ...)` 把它插到任务栏之后（z-order 下方）。taskbar 用 `FindWindowW("Shell_TrayWnd")`；多屏先用 `MonitorFromWindow` 匹配 `Shell_SecondaryTrayWnd`，没有再用主任务栏。taskbar 不是 topmost 时保持纯置顶，绝不为了“在任务栏下面”而掉出 topmost 带。
+- **绝不允许被任务栏整个吞掉**（否则点不到、只能拖出来才能恢复）：插到任务栏之前先量 `covered_share(window_rect(hwnd), window_rect(tray))` 与 `visible_strip(...)`；盖过 `TASKBAR_COVER_LIMIT=0.6`，或者露在外面的边不够 `TASKBAR_KEEP_VISIBLE_PX=12`（根本瞄不准），就改成 `SetWindowPos(hwnd, HWND_TOPMOST, ...)` 爬到任务栏之上保持可点击，并记 `("above", tray)` 状态；拖出来后下一秒条件不成立，又自动回到下面。日志关键字：`keeping it above` / `below taskbar`。
+- 自动隐藏的任务栏不用特殊处理：滑出时它的 rect 会真盖到窗口上 → 同一套判断自动把窗口抬上去；缩回去后自动回下面。
+- 验证“会不会被吞”可以完全不点鼠标：用外部脚本 `win32gui.SetWindowPos(app, 0, x, tray.top+10, 0, 0, SWP_NOSIZE|SWP_NOZORDER)` 把窗口按进任务栏（程序的 `_tick` 用 `SWP_NOMOVE`，不会把它拖回来），等 3 秒后用 `GetTopWindow` + `GW_HWNDNEXT` 枚举 z-order，比 app 与 taskbar 的下标（app 下标更小 = 在任务栏上面），再挪到 `tray.top-8`（盖 71%、露 8px，仍应在上面）与 `tray.top-20`（盖 29%、露 20px，应回到下面）。
 - 维护：点击 / `root.lift()` / `show()` 会把窗口抬回任务栏之上，所以要在 `<ButtonRelease-1>`、`<FocusIn>`、拖动 `_move`、`show()` 和每秒 `_tick` 里重新校正。校正前先沿 `GW_HWNDPREV` 向上找 taskbar：找到说明已经在下面，直接返回，避免无谓重排。
 - 验证：用 `GetTopWindow` + `GetWindow(GW_HWNDNEXT)` 枚举 z-order，taskbar 为 topmost 时 app 的 index 应大于 taskbar（如 app=6、tray=5），且两者都带 `WS_EX_TOPMOST`；用 `SetWindowPos(tray, HWND_NOTOPMOST, ...)` 模拟任务栏失去 topmost（分辨率切换 / Explorer 重启后会出现），此时 app 必须仍是 `WS_EX_TOPMOST`、index 小于所有普通窗口，日志写 `keeping widget topmost`；恢复 taskbar topmost 后再自动变回在任务栏下面。
 - 坑：`SetWindowPos` 的 `hWndInsertAfter` 必须是 topmost 的 taskbar；若传非 topmost 的 taskbar，目标窗口会被改成非 topmost —— 这正是“有时候不置顶”的根因：任务栏在分辨率切换 / Explorer 重启 / 全屏工具之后可能没有 `WS_EX_TOPMOST`，旧代码仍然按它插队，于是悬浮窗被降级到普通窗口层，下一秒 tick 又继续把它按在下面。
@@ -186,6 +189,26 @@ GDDR6X（如 RTX 3090）的存温走 NVAPI。主要文件：
 - 现象：`ImageGrab.grab(bbox=GetWindowRect(...))` 在精简→完全改尺寸后，截图左上角出现旧 header 的半透明残影（窗口本身内容正常，`PrintWindow` 干净）。
 - 原因：Tk 窗口带 `-alpha 0.97` 且 `overrideredirect`，改尺寸/移动后 DWM 的分层表面在屏幕截图中会残留旧帧。
 - 做法：`ctypes.WinDLL("user32").PrintWindow(hwnd, hdc, 2)` 把窗口画到内存 DC，再用 PIL 从 bitmap 取图；`win32gui` 没有导出 `PrintWindow`，必须用 ctypes。docs 截图用此法可避免残影。
+
+### 三布局（完全 / 精简 / 极简）与 compact.flag 的内容语义
+
+- 常量 `MODE_FULL/MODE_COMPACT/MODE_ULTRA` + `MODE_NEXT` 循环，标题栏只有一个按钮，标签永远写**下一个**布局的名字（`MODE_NAMES[MODE_NEXT[self.mode]]`）。
+- `compact.flag` 的**内容**现在有意义：文件不存在 = 完全，空文件 = 精简，内容 `ultra` = 极简；因此旧的 flag 文件照旧可用（别去改写用户的内容做测试）。
+- 极简模式**没有标题栏**：`—` 和布局按钮是 `ultra_row` 的子控件，随行一起销毁重建；换回其它布局时必须 `header.pack(before=self.body)`，否则标题栏会被 pack 到 body 下面。
+- 拖动：`_bind_drag` 递归绑定行内控件，但**跳过 `tk.Button`**（点按钮不是抓手柄，鼠标抖一下就会把窗口推走）。`_press` 必须用 `x_root/y_root` 绝对坐标 —— 行内控件的 `e.x/e.y` 是控件本地坐标，拿它当窗口原点会让窗口跳变。
+- 宽度：每张卡一个 `width=ULTRA_SEG_W` + `pack_propagate(False)` 的**定宽格子**（90px），于是某张卡的数字变长变短不会把别的卡的数字推位；`apply_geometry` 与 `_ultra_need()` 都是纯算术（`ULTRA_PAD + ULTRA_SEG_W*n + ULTRA_SEP_W*(n-1) + ULTRA_BTN_W`），不再需要“只增不减”的宽度补偿。（`pack_propagate(False)` 的 Frame 里 `winfo_reqwidth()` 只会报自己配置的宽度，量不到子控件 —— 想按内容算宽就得逐标签累加。）
+- 定宽按最坏情况算刚好，格子内容超宽会被 Frame 裁掉：序号 `13+10`=23、`99G` 25、`999W` `34+8`=42 → 90。Tk Label 即使 `padx=0` 仍带约 4px 内部留白，算宽时别按纯字宽算。
+- 显存读数单独一个粗体标签（`Consolas 9 bold`、`padx=0` 与前后标签齐平，否则默认 padx 会在数字两边各挤出约 1px 的缝）；Consolas 是等宽字体，粗体的 reqwidth 与常规相同，所以粗体不影响宽度估算。
+- 分隔线用 `ULTRA_SEP_COLOR=#4a5262` 的 **2px** Frame（比边框 `LINE=#2a2f3a` 亮不少，否则 1px 的分隔线几乎看不见，两张卡看起来连成一片）。行高 `ULTRA_ROW_H=26` 必须够 `—` 按钮坐得下：Segoe UI 11 时按钮 reqheight=31，会被定高行裁掉，现在 `—` 用 Segoe UI 10（reqheight=26）刚好；窗口高 = `ULTRA_ROW_H + 2*pady` = 28。
+- 实测：序号 `13+10`、`12G` 21、`250W` 34+8；定宽格子里数字**左对齐**，所以位数变化时数字的左边缘不动、只有单位 `G`/`W` 在跑。
+- 验证“数字没有移位”的办法：同一窗口连拍两张 PrintWindow 截图，找出整列都等于分隔线色 `#4a5262`（现在每条分隔线占 2 列，如 `[99,100]`、`[195,196]`）或边框色 `#2a2f3a`（如 `[6,349]`）的列，两张的分隔线/边框列号应完全一致；再逐列比对差异像素，应只落在数字区域。
+
+### 验证 UI 交互不必依赖真实鼠标（用 invoke + event_generate）
+
+- 现象：`SetCursorPos` + `mouse_event` 的自动点击经常失效 —— 用户在动真鼠标时光标立刻被抢走，`SetCursorPos` 白做，拖动和点击全部落空。
+- 做法：在进程内直接 `btn.invoke()` 触发命令；拖动用 `w.event_generate("<ButtonPress-1>", rootx=..., rooty=..., x=..., y=...)`，选项名是 `rootx/rooty`（写成 `x_root` 会报 `bad option`）。
+- 好处：不依赖光标位置，断言精确（窗口位移 == 指针位移）；`cget("font")` 返回的是 Tcl 列表字符串（如 `Consolas 9 bold`），判断粗体用 `"bold" in ...` 而不是 `endswith("bold")`。
+- 坑：`MODE_NAMES` 的值是中文，断言里别拿英文 `"full"/"compact"` 去比；`cget("text")` 的标签断言必须在**每次切换之后立刻**取，放在循环外面会全部跟最后一个模式比。
 
 <!--
 ### 某某问题

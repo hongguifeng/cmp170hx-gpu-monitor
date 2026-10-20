@@ -20,3 +20,6 @@ win-crop*.png
 # OS files
 Thumbs.db
 .DS_Store
+
+# Editor settings (per-machine, not project content)
+.vscode/

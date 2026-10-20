@@ -12,8 +12,12 @@ GPUs exist" while the status line already said "NVML . 3 cards".
 Run:  python test-geometry.py        (real NVML / real Tk, ASCII output only)
 
 Steps 4-7 also guard the rule that a user-dragged window resizes about its
-bottom-right corner, never its top-left, otherwise switching compact <-> full
-buries the window under the taskbar or leaves a hole.
+bottom-right corner, never its top-left, otherwise switching between the three
+layouts (full / compact / ultra) buries the window under the taskbar or leaves
+a hole. Steps 8-9 cover the ultra layout: a single line with no title bar at
+all, whose width follows the count while its height stays fixed. Step 10 checks
+the rule that keeps that line reachable: it may hide under the taskbar, but
+never so deep that there is nothing left to click.
 """
 
 import os
@@ -63,8 +67,10 @@ def state(app, root):
     root.update()
     h = root.winfo_height()
     body = app.body.winfo_reqheight()
+    # ultra has no title bar at all, so the body starts at the very top
+    base = 32 if app.header.winfo_manager() == "pack" else 0
     mapped = sum(1 for c in app.cards if c["name"].master.winfo_ismapped())
-    fits = 32 + body <= h
+    fits = base + body <= h
     print("  ui_ngpu=%d cards=%d mapped=%d win_h=%d body_req=%d %s" % (
         app.ui_ngpu, len(app.cards), mapped, h, body,
         "fits" if fits else "CLIPPED"))
@@ -90,7 +96,7 @@ def main():
     root = tk.Tk()
     app = m.MonitorApp(root, FakeIcon())
     cancel_after(root)
-    app.compact = True
+    app.mode = m.MODE_COMPACT
     app.build_cards(1)
     app.apply_geometry()
     print("[1] start with 1 GPU")
@@ -138,8 +144,8 @@ def main():
     ok &= new_corner == corner and x1 == x0 and y1 == y0 + h0 - 71
 
     print("[5] compact -> full also resizes about the bottom-right corner")
-    # set .compact by hand: toggle_compact() would rewrite compact.flag
-    app.compact = False
+    # set .mode by hand: cycle_mode() would rewrite compact.flag
+    app.mode = m.MODE_FULL
     app.build_cards(app.ui_ngpu)
     app.apply_geometry()
     root.update()
@@ -162,7 +168,7 @@ def main():
     ok &= state(app, root)[:2] == (True, 3)
 
     print("[7] back to compact with 3 GPUs")
-    app.compact = True
+    app.mode = m.MODE_COMPACT
     app.build_cards(3)
     app.apply_geometry()
     root.update()
@@ -172,6 +178,79 @@ def main():
         root.winfo_width(), root.winfo_height(), x4, y4, corner4))
     ok &= (root.winfo_width(), root.winfo_height()) == (440, 137)
     ok &= corner4 == corner
+
+    print("[8] ultra mode puts all three GPUs on one line")
+    app.mode = m.MODE_ULTRA
+    app.build_cards(3)
+    app.apply_geometry()
+    root.update()
+    x5, y5 = root.winfo_x(), root.winfo_y()
+    w5, h5 = root.winfo_width(), root.winfo_height()
+    corner5 = (x5 + w5, y5 + h5)
+    req = app._ultra_need()
+    mapped = sum(1 for c in app.cards
+                 if c["name"].winfo_ismapped() and c["used"].winfo_ismapped()
+                 and c["pw"].winfo_ismapped())
+    print("  ultra 3 GPUs %dx%d at (%d,%d), corner %s, line_needs=%d mapped=%d" % (
+        w5, h5, x5, y5, corner5, req, mapped))
+    # one line, no title bar: width follows the count, height is fixed. The
+    # width has to hold every segment plus both buttons at the right end.
+    ok &= (w5, h5) == (m.ULTRA_PAD + m.ULTRA_SEG_W * 3
+                       + m.ULTRA_SEP_W * 2 + m.ULTRA_BTN_W, m.ULTRA_H)
+    ok &= corner5 == corner
+    ok &= req <= w5 and mapped == 3
+    ok &= app.header.winfo_manager() == ""
+
+    # Every card owns a cell of exactly ULTRA_SEG_W, evenly spaced. That is the
+    # whole point: a number changing on GPU 0 must not push GPU 1's figures.
+    cells = [(c["cell"].winfo_width(), c["cell"].winfo_rootx(),
+              c["used"].winfo_rootx()) for c in app.cards]
+    print("  cells width/x/figure %s" % (cells,))
+    ok &= all(w == m.ULTRA_SEG_W for w, _, _ in cells)
+    ok &= all(cells[i][1] - cells[i - 1][1] == m.ULTRA_SEG_W + m.ULTRA_SEP_W
+              for i in range(1, len(cells)))
+    app._tick()
+    root.update()
+    after = [(c["cell"].winfo_width(), c["cell"].winfo_rootx(),
+              c["used"].winfo_rootx()) for c in app.cards]
+    print("  after fresh readings %s" % (after,))
+    ok &= after == cells
+
+    print("[9] ultra with a single GPU: one segment, plus the two buttons")
+    fake_count(1)
+    app._tick()
+    root.update()
+    x6, y6 = root.winfo_x(), root.winfo_y()
+    w6, h6 = root.winfo_width(), root.winfo_height()
+    print("  ultra 1 GPU %dx%d at (%d,%d), corner %s" % (
+        w6, h6, x6, y6, (x6 + w6, y6 + h6)))
+    ok &= (w6, h6) == (max(m.ULTRA_MIN_W,
+                           m.ULTRA_PAD + m.ULTRA_SEG_W + m.ULTRA_BTN_W),
+                       m.ULTRA_H)
+    ok &= (x6 + w6, y6 + h6) == corner
+    ok &= state(app, root)[:2] == (True, 1)
+
+    print("[10] the taskbar must never swallow the widget")
+    tb = (0, 2112, 3840, 2160)          # taskbar docked at the bottom, 48px tall
+    cases = [
+        ((2000, 2084), 28, False),      # clear above it: nothing to worry about
+        ((2000, 2096), 16, False),      # a third covered: still grabbable
+        ((2000, 2104), 8, True),        # only 8px left: hopeless to aim at
+        ((2000, 2112), 0, True),        # parked inside: completely unreachable
+        ((2000, 2132), 0, True),        # below its top edge: same story
+    ]
+    for (x, y), want_strip, want_flip in cases:
+        wr = (x, y, x + 356, y + 28)    # the ultra line, as it is now
+        share = m.covered_share(wr, tb)
+        strip = m.visible_strip(wr, tb)
+        flip = (share >= m.TASKBAR_COVER_LIMIT
+                or (share > 0.0 and strip < m.TASKBAR_KEEP_VISIBLE_PX))
+        print("  line at (%d,%d): covered %.0f%%, %dpx sticking out, "
+              "goes above taskbar=%r" % (x, y, share * 100, strip, flip))
+        ok &= strip == want_strip and flip == want_flip
+    ok += 0
+    ok &= m.covered_share((2000, 2084, 2356, 2112), None) == 0.0
+    ok &= m.visible_strip(None, tb) == 0
 
     root.destroy()
     print("RESULT:", "PASS" if ok else "FAIL")
