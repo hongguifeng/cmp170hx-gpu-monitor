@@ -640,7 +640,27 @@ COMPACT_W = 440
 COMPACT_ROW_H = 33
 FULL_CARD_W = 250
 FULL_CARD_PAD = 12   # left + right padding of one full-mode column
+FULL_COL_H = 444     # one full-mode column, header and padding excluded
 FULL_H = 492
+
+# Full mode splits its history band into two charts stacked one above the
+# other. Core temp and mem temp are both degrees and share one scale, so they
+# stay together in the upper chart; watts have nothing in common with degrees,
+# so power gets the lower chart and a grid of its own. The band used to be one
+# 170px canvas plus a legend frame outside it; the key now lives inside each
+# chart's own top strip, which is what pays for the second chart without the
+# window growing by a single pixel: 444 - 124 - 90 - (6 + 6) padding = 218
+# left for the text card, which asks for 205.
+GRAPH_H_TEMP = 124
+GRAPH_H_PW = 90
+GRAPH_GAP = 6        # dark strip between the two charts: what tells them apart
+GRAPH_PAD_L = 38     # room for the axis numbers: "255W" is 29px wide at 8pt
+GRAPH_PAD_R = 14     # used to be 34: the watt numbers moved to the left edge
+GRAPH_PAD_T = 16     # strip above the top grid line, where the key sits
+GRAPH_PAD_B = 16     # room for "now" / "-3 min" on the bottom chart
+GRAPH_PAD_B_TOP = 10 # the upper chart shares the time axis, so it needs less
+GRAPH_KEY_Y = 7      # vertical centre of the key line
+GRAPH_KEY_GAP = 56   # second key sits this far right of the first (key is 39px)
 # Ultra mode packs every GPU into one line: "0 12G 250W | 1 11G 220W". Only
 # the memory in use and the power draw survive, both rounded to whole numbers
 # and with no tag in front of them, and there is no title bar above them --
@@ -880,6 +900,7 @@ class MonitorApp:
         self.body.pack(fill="both", expand=True)
         self.cards = []
         self.canvases = []
+        self.pw_canvases = []
         self.hist = self.mhist = self.phist = []
         self.build_cards(max(self.ui_ngpu, 1))
 
@@ -1137,6 +1158,7 @@ class MonitorApp:
             w.destroy()
         self.cards = []
         self.canvases = []
+        self.pw_canvases = []
         self.ultra_row = None
         self.hist = [deque(maxlen=HIST) for _ in range(n)]
         self.mhist = [deque(maxlen=HIST) for _ in range(n)]
@@ -1183,6 +1205,7 @@ class MonitorApp:
                 self.cards.append({"name": idx, "used": mu, "pw": mp,
                                    "cell": cell})
                 self.canvases.append(None)
+                self.pw_canvases.append(None)
             # This layout has no title bar at all: the title and the status
             # text vanish with it, and — plus the layout button are built
             # right into the line. Being its children, they are destroyed and
@@ -1241,9 +1264,10 @@ class MonitorApp:
                 self.cards.append({"name": name, "temp": temp,
                                    "mtemp": mt, "mem": mm, "pw": mp})
                 self.canvases.append(None)
+                self.pw_canvases.append(None)
                 continue
             col = tk.Frame(self.body, bg=BG, width=FULL_CARD_W)
-            col.configure(height=444)
+            col.configure(height=FULL_COL_H)
             col.pack_propagate(False)
             col.pack(side="left", fill="both", expand=True,
                      padx=(8, 4 if i == 0 else 2) if i == 0 else (4, 8),
@@ -1263,19 +1287,20 @@ class MonitorApp:
             self.cards.append({"name": name, "temp": temp, "info": info})
 
             # Full mode is the only layout that draws history graphs; compact
-            # and ultra never get past their own branches above.
-            cv = tk.Canvas(col, bg=CARD, height=170, highlightthickness=0)
+            # and ultra never get past their own branches above. Two charts
+            # stacked in the space that used to hold one: degrees on top, watts
+            # underneath. No legend frame any more -- the key is drawn inside
+            # each chart, which is where the height for the second one comes
+            # from. They sit on the same x mapping, so they read as one
+            # timeline cut in two, not as two unrelated plots.
+            cv = tk.Canvas(col, bg=CARD, height=GRAPH_H_TEMP,
+                           highlightthickness=0)
             cv.pack(fill="x", pady=(6, 0))
-            leg = tk.Frame(col, bg=BG)
-            leg.pack(anchor="w", padx=2, pady=(3, 0))
-            tc = GRAPH_TEMP
-            mc = GRAPH_MEM
-            for text, color in (("— 核温", tc), ("— 存温", mc),
-                                ("┄ 功耗", PW_COLOR)):
-                tk.Label(leg, text=text, bg=BG, fg=color,
-                         font=("Segoe UI", 9)).pack(side="left",
-                                                   padx=(0, 10))
+            pcv = tk.Canvas(col, bg=CARD, height=GRAPH_H_PW,
+                            highlightthickness=0)
+            pcv.pack(fill="x", pady=(GRAPH_GAP, 0))
             self.canvases.append(cv)
+            self.pw_canvases.append(pcv)
 
     # window drag / visibility
     def _press(self, e):
@@ -1491,21 +1516,52 @@ class MonitorApp:
         self._check_display()
         self.keep_below_taskbar()  # activation may have raised us again
 
+    def _chart_frame(self, cv, lo, hi, unit, ink, divisions, pad_b, live):
+        """Frame, horizontal grid and axis numbers for one chart.
+
+        Returns (w, h, fn): the canvas size and a value -> y pixel mapping. The
+        box is drawn even with nothing to plot -- the layout must not collapse
+        into a hole while a driver is being reinstalled -- but a grid printed
+        with invented numbers would lie, so the labels keep away in that case.
+        """
+        w = int(cv.winfo_width() or FULL_CARD_W)
+        h = int(cv.winfo_height() or GRAPH_H_TEMP)
+        cv.create_rectangle(0, 0, w - 1, h - 1, outline=LINE)
+        if not live:
+            return w, h, None
+        top, bot = GRAPH_PAD_T, h - pad_b
+
+        def y(v):
+            return top + (bot - top) * (1 - (v - lo) / (hi - lo))
+
+        for k in range(divisions + 1):
+            yy = top + (bot - top) * k / divisions
+            cv.create_line(GRAPH_PAD_L, yy, w - GRAPH_PAD_R, yy, fill=LINE)
+            cv.create_text(4, yy, text="%d%s" % (
+                round(hi - (hi - lo) * k / divisions), unit), fill=ink,
+                font=("Segoe UI", 8), anchor="w")
+        return w, h, y
+
     def draw_graph(self, i):
-        cv = self.canvases[i]
-        if cv is None:
-            return  # compact / ultra mode: no graph
-        cv.delete("all")
-        w = int(cv.winfo_width() or 240)
-        h = 170
-        pad_l, pad_r, pad_t, pad_b = 30, 34, 10, 16
+        # One canvas per GPU used to carry three series on two scales at once:
+        # degrees read off the left edge, watts off the right, and both sets of
+        # numbers printed on the very same grid lines -- so the two units were
+        # only told apart by which side of the chart their numbers sat on. Core
+        # temp and mem temp are degrees and share one scale, so they stay
+        # together in the upper chart; watts have nothing in common with
+        # degrees and get the lower chart plus a grid of their own. Both charts
+        # use the same x mapping, which is what makes them read as one timeline
+        # cut in two rather than as two unrelated plots.
+        cv_t, cv_p = self.canvases[i], self.pw_canvases[i]
+        if cv_t is None:
+            return  # compact / ultra mode: no graph at all
+        cv_t.delete("all")
+        cv_p.delete("all")
 
         tv = [v for v in self.hist[i] if v is not None]
         mv = [v for v in self.mhist[i] if v is not None]
         pv = [v for v in self.phist[i] if v is not None]
         temp_all = tv + mv
-        if not temp_all and not pv:
-            return
 
         tlo, thi = (min(temp_all) - 2, max(temp_all) + 2) if temp_all else (0, 10)
         if thi - tlo < 10:
@@ -1516,42 +1572,58 @@ class MonitorApp:
             mid = (phi + plo) / 2
             plo, phi = max(0, mid - 10), mid + 10
 
+        w_t, _, y_t = self._chart_frame(cv_t, tlo, thi, "°", GRAPH_TEMP,
+                                        4, GRAPH_PAD_B_TOP, bool(temp_all))
+        w_p, h_p, y_p = self._chart_frame(cv_p, plo, phi, "W", PW_COLOR,
+                                          3, GRAPH_PAD_B, bool(pv))
+
+        # The key used to be a legend frame hanging under the graph. It now
+        # sits inside each chart's own top strip: two charts no longer need two
+        # captions of their own, and the height that frees is exactly what the
+        # second chart costs.
+        cv_t.create_text(GRAPH_PAD_L, GRAPH_KEY_Y, text="— 核温",
+                         fill=GRAPH_TEMP, font=("Segoe UI", 9), anchor="w")
+        cv_t.create_text(GRAPH_PAD_L + GRAPH_KEY_GAP, GRAPH_KEY_Y,
+                         text="— 存温", fill=GRAPH_MEM,
+                         font=("Segoe UI", 9), anchor="w")
+        cv_p.create_text(GRAPH_PAD_L, GRAPH_KEY_Y, text="┄ 功耗",
+                         fill=PW_COLOR, font=("Segoe UI", 9), anchor="w")
+
+        # One timeline, so the time axis is printed once, at the very bottom of
+        # the pair, and the upper chart simply reads down to it. The oldest
+        # sample is index 0 and the newest is the last one appended, so the
+        # left end is three minutes back and the right end is now.
+        cv_p.create_text(GRAPH_PAD_L, h_p - 5, text="-3 min", fill=DIM,
+                         font=("Segoe UI", 8), anchor="w")
+        cv_p.create_text(w_p - GRAPH_PAD_R, h_p - 5, text="now", fill=DIM,
+                         font=("Segoe UI", 8), anchor="e")
+
+        # Close over the width rather than take it as an argument: a helper that
+        # takes (index, width) is one swapped call away from a mapping that
+        # silently smears the oldest samples left over the axis numbers and
+        # squeezes the rest into less than the full width -- and the curves still
+        # look plausible while it does. Both charts are the same width, so one
+        # span serves them both.
+        span = w_t - GRAPH_PAD_L - GRAPH_PAD_R
+
         def px(j):
-            return pad_l + (w - pad_l - pad_r) * j / (HIST - 1)
+            return GRAPH_PAD_L + span * j / (HIST - 1)
 
-        def ty(v):
-            return pad_t + (h - pad_t - pad_b) * (1 - (v - tlo) / (thi - tlo))
-
-        def py(v):
-            return pad_t + (h - pad_t - pad_b) * (1 - (v - plo) / (phi - plo))
-
-        for k in range(5):
-            y = pad_t + (h - pad_t - pad_b) * k / 4
-            cv.create_line(pad_l, y, w - pad_r, y, fill=LINE)
-            cv.create_text(4, y, text="%d°" % round(thi - (thi - tlo) * k / 4),
-                           fill=GRAPH_TEMP,
-                           font=("Segoe UI", 8), anchor="w")
-            cv.create_text(w - 4, y,
-                           text="%dW" % round(phi - (phi - plo) * k / 4),
-                           fill=PW_COLOR, font=("Segoe UI", 8), anchor="e")
-        cv.create_text(w - pad_r, h - 5, text="-3 min", fill=DIM,
-                       font=("Segoe UI", 8), anchor="e")
-        cv.create_text(pad_l, h - 5, text="now", fill=DIM,
-                       font=("Segoe UI", 8), anchor="w")
-
-        pts_t = [(px(j), ty(v)) for j, v in enumerate(self.hist[i])
-                 if v is not None]
-        if len(pts_t) >= 2:
-            cv.create_line(pts_t, fill=GRAPH_TEMP, width=2, smooth=True)
-        pts_m = [(px(j), ty(v)) for j, v in enumerate(self.mhist[i])
-                 if v is not None]
-        if len(pts_m) >= 2:
-            cv.create_line(pts_m, fill=GRAPH_MEM, width=2, smooth=True)
-        pts_p = [(px(j), py(v)) for j, v in enumerate(self.phist[i])
-                 if v is not None]
-        if len(pts_p) >= 2:
-            cv.create_line(pts_p, fill=PW_COLOR, width=1, dash=(4, 3),
-                           smooth=True)
+        if y_t is not None:
+            pts_t = [(px(j), y_t(v)) for j, v in enumerate(self.hist[i])
+                     if v is not None]
+            if len(pts_t) >= 2:
+                cv_t.create_line(pts_t, fill=GRAPH_TEMP, width=2, smooth=True)
+            pts_m = [(px(j), y_t(v)) for j, v in enumerate(self.mhist[i])
+                     if v is not None]
+            if len(pts_m) >= 2:
+                cv_t.create_line(pts_m, fill=GRAPH_MEM, width=2, smooth=True)
+        if y_p is not None:
+            pts_p = [(px(j), y_p(v)) for j, v in enumerate(self.phist[i])
+                     if v is not None]
+            if len(pts_p) >= 2:
+                cv_p.create_line(pts_p, fill=PW_COLOR, width=1, dash=(4, 3),
+                                 smooth=True)
 
 # ---------------------------------------------------------------- main
 def main():

@@ -1,8 +1,11 @@
 """Full-mode graphs must use one shared set of inks for every GPU.
 
-Every canvas has to be drawn in #4f8cff (core temp) / #9cc8ff (mem temp) /
+Every chart has to be drawn in #4f8cff (core temp) / #9cc8ff (mem temp) /
 #e8a23c (power) and must hold no trace of the old per-GPU palette
-(#3ddc84 / #ffb020 / #ff5555 and their pale mem-temp variants).
+(#3ddc84 / #ffb020 / #ff5555 and their pale mem-temp variants). The two charts
+stacked under each card are checked apart from each other: the upper one holds
+the temperatures and nothing amber, the lower one holds the watts and nothing
+blue, which is what proves they really are two separate charts.
 """
 import ctypes
 import importlib.util
@@ -33,6 +36,11 @@ SHAPE = [
 ]
 
 UNIFIED = {"temp": "#4f8cff", "mem": "#9cc8ff", "pw": "#e8a23c"}
+# what each of the two charts must show, and what must stay out of it
+EXPECT = {
+    "temps": ({"temp": 300, "mem": 300}, {"pw": 20}),
+    "power": ({"pw": 200}, {"temp": 20, "mem": 20}),
+}
 OLD_INKS = ["#3ddc84", "#ffb020", "#ff5555",
             "#a8f0c0", "#ffd28a", "#ff9c9c"]
 
@@ -118,30 +126,37 @@ for j in range(gmt.HIST):
 img, rect = shoot(root, before=lambda: [app.draw_graph(i) for i in range(N)])
 
 failures = []
-for i, cv in enumerate(app.canvases):
-    x = cv.winfo_rootx() - rect[0]
-    y = cv.winfo_rooty() - rect[1]
-    cw, ch = cv.winfo_width(), cv.winfo_height()
-    crop = img.crop((x, y, x + cw, y + ch))
-    near, exact_old = {}, {}
-    for px in crop.getdata():
-        h = hexpx(px)
-        if h in OLD_INKS:                        # exact: #ffb020 is only ~39
-            exact_old[h] = exact_old.get(h, 0) + 1   # away from the amber line
-        for name, want in UNIFIED.items():
-            if dist(px, rgb(want)) <= 60:
-                near[name] = near.get(name, 0) + 1
-    print("canvas %d at %d,%d %dx%d" % (i, x, y, cw, ch))
-    print("  unified inks :", near)
-    print("  old per-GPU  :", exact_old)
-    if near.get("temp", 0) < 300:
-        failures.append("canvas %d has too little core-temp blue" % i)
-    if near.get("mem", 0) < 300:
-        failures.append("canvas %d has too little mem-temp pale blue" % i)
-    if near.get("pw", 0) < 200:
-        failures.append("canvas %d has too little power amber" % i)
-    if exact_old:
-        failures.append("canvas %d still draws in %s" % (i, sorted(exact_old)))
+for i in range(N):
+    for kind, cv in (("temps", app.canvases[i]), ("power", app.pw_canvases[i])):
+        want, off = EXPECT[kind]
+        x = cv.winfo_rootx() - rect[0]
+        y = cv.winfo_rooty() - rect[1]
+        cw, ch = cv.winfo_width(), cv.winfo_height()
+        crop = img.crop((x, y, x + cw, y + ch))
+        near, exact_old = {}, {}
+        for px in crop.getdata():
+            h = hexpx(px)
+            if h in OLD_INKS:                    # exact: #ffb020 is only ~39
+                exact_old[h] = exact_old.get(h, 0) + 1   # away from the amber line
+            for name, colour in UNIFIED.items():
+                if dist(px, rgb(colour)) <= 60:
+                    near[name] = near.get(name, 0) + 1
+        print("card %d %s chart at %d,%d %dx%d" % (i, kind, x, y, cw, ch))
+        print("  unified inks :", near)
+        print("  old per-GPU  :", exact_old)
+        for name, floor in want.items():
+            if near.get(name, 0) < floor:
+                failures.append("card %d %s chart has too little %s" %
+                                (i, kind, name))
+        for name, ceiling in off.items():
+            if near.get(name, 0) > ceiling:
+                failures.append("card %d %s chart is drawing in %s" %
+                                (i, kind, name))
+        if exact_old:
+            failures.append("card %d %s chart still draws in %s" %
+                            (i, kind, sorted(exact_old)))
+        if kind == "temps" and (y + ch > app.pw_canvases[i].winfo_rooty() - rect[1]):
+            failures.append("card %d charts overlap" % i)
 
 img.save("shot-full.png")
 print("saved shot-full.png")

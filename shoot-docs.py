@@ -1,8 +1,11 @@
 """Capture the live full-mode window for docs/img/window-full.png.
 
 Finds the running GPU Monitor window, renders it with PrintWindow (no
-layered-window ghosting), checks that every graph band uses the shared inks and
-that none of the old per-GPU curve colours survives there.
+layered-window ghosting), checks that every chart band uses the shared inks and
+that none of the old per-GPU curve colours survives there. Each card now holds
+two charts stacked: the upper one carries the two temperature series, the lower
+one the power draw -- so each band is checked on its own, and the ink that must
+not appear there is as important as the ink that must.
 """
 import ctypes
 import sys
@@ -18,6 +21,18 @@ UNIFIED = {"core blue": "#4f8cff", "mem pale blue": "#9cc8ff",
            "power amber": "#e8a23c"}
 OLD_CURVE_INKS = ["#3ddc84", "#ffb020", "#ff5555",
                   "#a8f0c0", "#ffd28a", "#ff9c9c"]
+
+# Where the two charts of each card land in the 492px window: the temperature
+# chart runs 264..388 and the power chart 394..484, both 250px wide, and the
+# columns start at 8 / 266 / 528 (card width 250 plus its own padding).
+TEMP_X = [8, 266, 528]
+TEMP_BOX = (264, 388)
+PW_BOX = (394, 484)
+TEMP_WANT = {"core blue": 20, "mem pale blue": 20}
+PW_WANT = {"power amber": 20}
+# the other unit's ink must stay out of the chart it does not belong to
+TEMP_OUT = {"power amber": 25}
+PW_OUT = {"core blue": 25, "mem pale blue": 25}
 
 
 def rgb(h):
@@ -65,26 +80,35 @@ mdc.DeleteDC()
 src.DeleteDC()
 win32gui.ReleaseDC(hwnd, dc)
 
-# Three fixed columns; the graph band of each card sits at the same place.
-BANDS = [(8, 290, 258, 460), (266, 290, 516, 460), (528, 290, 778, 460)]
+# Three fixed columns; the two chart bands of each card sit at the same place.
+BANDS = [(x, TEMP_BOX, "temps", TEMP_WANT, TEMP_OUT) for x in TEMP_X] \
+    + [(x, PW_BOX, "power", PW_WANT, PW_OUT) for x in TEMP_X]
 failures = []
-for i, box in enumerate(BANDS):
-    crop = img.crop(box)
+for i, (x, box, kind, want, out) in enumerate(BANDS):
+    card = i % len(TEMP_X)
+    crop = img.crop((x, box[0], x + 250, box[1]))
     near, exact_old = {}, {}
     for px in crop.getdata():
         hh = hexpx(px)
         if hh in OLD_CURVE_INKS:
             exact_old[hh] = exact_old.get(hh, 0) + 1
-        for name, want in UNIFIED.items():
-            if dist(px, rgb(want)) <= 60:
+        for name, colour in UNIFIED.items():
+            if dist(px, rgb(colour)) <= 60:
                 near[name] = near.get(name, 0) + 1
-    print("band %d %s" % (i, box))
+    print("card %d %s band x=%d y=%d..%d" % (card, kind, x, box[0], box[1]))
     print("  unified:", near)
     print("  old curve inks:", exact_old)
-    if near.get("core blue", 0) < 20:
-        failures.append("band %d shows almost no core-temp blue" % i)
+    for name, floor in want.items():
+        if near.get(name, 0) < floor:
+            failures.append("card %d %s band shows almost no %s"
+                            % (card, kind, name))
+    for name, ceiling in out.items():
+        if near.get(name, 0) > ceiling:
+            failures.append("card %d %s band draws in %s"
+                            % (card, kind, name))
     if exact_old:
-        failures.append("band %d still draws in %s" % (i, sorted(exact_old)))
+        failures.append("card %d %s band still draws in %s"
+                        % (card, kind, sorted(exact_old)))
 
 img.save("shot-live-full.png")
 print("saved shot-live-full.png")

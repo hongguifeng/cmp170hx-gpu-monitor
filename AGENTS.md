@@ -219,6 +219,36 @@ GDDR6X（如 RTX 3090）的存温走 NVAPI。主要文件：
 - 反过来，“新颜色在不在”用容差 60 的模糊匹配没问题（曲线有抗锯齿）；但**小字号**（极简模式 9pt 序号）几乎没纯前景像素，要改成“取非背景像素、按最接近的候选色投票”（实测每格 ink≈20-35，颜色对时占比 ≥0.94）。
 - docs 截图只能用**真实运行的实例**重截（曲线得有真数据，启动后等 1 分钟左右），外部脚本 `EnumWindows` 找标题 `GPU Monitor` + `PrintWindow`；合成数据的截图不要顶上去。
 
+### 完全模式的曲线已拆成上下两张图
+
+- 布局：上图 `GRAPH_H_TEMP=124`（核温 + 存温，共用一个 °C 刻度），下图 `GRAPH_H_PW=90`（功耗，自己的 W 刻度），中间 `GRAPH_GAP=6` 的暗色间隔；两张图共用同一套 x 映射，所以读起来是「同一条时间轴切成两段」而不是两个无关的图。
+- 窗口高度仍是 492（`FULL_H` 没动）：省出来的空间来自图例 —— 原来图例是图外的一个 Frame（21px + 3 pady），现在用 `cv.create_text` 画在每张图自己的顶部条带里（`GRAPH_PAD_T=16`、`GRAPH_KEY_Y=7`），两张图不再各自需要一条说明。
+- 卡片文字区实测需要 205px（name 26 + temp 65 + info 96 + 上下 pady 16 + 边框 2），列高 `FULL_COL_H=444` 减掉两张图和 padding 后给它 218px，**只剩 13px 余量**：以后再往完全模式里塞东西，先量 `card.winfo_reqheight()`，别凭感觉。
+- 像素坐标（相对窗口）：温度图 y=264..388，功耗图 y=394..484，三列 x = 8 / 266 / 528（列宽 250 + 各自 padding）。`shoot-docs.py` 的 BANDS 和 `test-charts.py` 都按这几个数断言，改尺寸必须一起改。
+- 没数据时只画框、图例和时间轴，不画刻度数字（`_chart_frame(..., live=False)`），免得摆出没人测过的假温度。
+- 验证：`python test-charts.py`（几何 / 裁剪 / 空数据 / 另外两种布局），`python test-colors.py` 现在分开断言两张图的墨色**互斥** —— 温度图里不许有琥珀，功耗图里不许有蓝，这才证明它们真的是两张图。
+- 重拍 docs：跑完 `python shoot-docs.py`（它验完各条带后存 `shot-live-full.png`）→ `cp shot-live-full.png docs/img/window-full.png`，两者同为 786x492。
+- 坑（已修，别再犯）：`px(j, w)` 被按 `px(w_t, j)` 调用，参数顺序颠倒 → 实际算成 `38 + (index - 52) * 250 / 179`，最旧的 52 个样本被抹到左边刻度数字上（就是「曲线和坐标重叠看不清」），其余样本也只铺到 215px 而不是 250。做法：把宽度闭包进 helper（`span = w_t - GRAPH_PAD_L - GRAPH_PAD_R` 再 `px(j)`），不给参数顺序颠倒的机会。
+- 时间轴方向：`hist` 是 `append`，所以 index 0 是最旧、最后一个才是最新 → 左端 `-3 min`、右端 `now`（这里写反过一次）。窗口没满 180 点之前最新读数还在中间，满 3 分钟才贴到右端，这是按索引铺 x 的必然行为，不是 bug。
+- 回归：`test-charts.py` 第 [5b] 步按像素断言曲线最左只能到 `GRAPH_PAD_L - 2` —— 存温那条浅蓝是温度图里唯一的浅蓝（刻度数字是另一种蓝），所以它是唯一可靠的时间轴起点探针；把 px 改回颠倒的写法，这一步立刻 FAIL。
+
+### 轴标签与图例的留白按 tkfont.measure 算，不要按字宽估
+
+- 瓦数标签挪到左边缘以后，`GRAPH_PAD_L` 就成了瓶颈：Segoe UI 8pt 实测 `"255W"` = 29px、`"100°"` = 22px，锚点 x=4 `anchor="w"` → 右边缘 33px，取 `GRAPH_PAD_L=38` 才不被曲线压住。
+- 图例同理：`"— 核温"` 9pt 实测 39px，`GRAPH_KEY_GAP=56` 才放得下第二个。
+- 量法：`tkinter.font.Font(family="Segoe UI", size=8).measure(...)`（得先有 root 窗口）；断言在 `test-charts.py` 第 [4][5] 步。
+
+### test-ultra-colors.py 是既有 flaky，别当成回归
+
+- 现象：极简模式序号配色全部 0 命中（`ink=0 votes={}`）。
+- 确认办法：`git stash push -- gpu-monitor-tray.py` 后重跑，HEAD 版本失败得一模一样 → 与本次改动无关，记得 `git stash pop`。
+- 根因同「按像素验证配色：PrintWindow 首拍可能没画」那条：同一个 root 里切布局后画面还没重绘；要验就另起一个 `tk.Tk()` 从头建窗口。
+
+### heredoc 交给 python 的 `\\` 会被压成 `\`
+
+- 现象：`python - <<'EOF'` 里写的 `'"\\u2014 "'` 到 Python 端变成 `'"\u2014 '`（反斜杠被吃掉、后面成了 unicode 转义），于是字符串替换默默不生效；或者直接报 `SyntaxError: truncated \uXXXX escape`。
+- 做法：heredoc 里的 Python 代码别写反斜杠转义 —— 特殊字符直接写字符本身，或用 `chr(0x2014)` / `bytes([13, 10])` 这类构造；要改文件内容就交给编辑工具做。
+
 <!--
 ### 某某问题
 - 现象：...

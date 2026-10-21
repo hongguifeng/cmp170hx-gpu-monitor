@@ -16,6 +16,8 @@ no-restart.flag
 # Screenshots / debug crops
 screen-capture.png
 win-crop*.png
+shot-*.png
+view-*.png
 
 # OS files
 Thumbs.db
