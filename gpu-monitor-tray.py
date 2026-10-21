@@ -620,8 +620,13 @@ def tray_image_for(temps):
 
 # ---------------------------------------------------------------- UI
 HIST = 180  # seconds of history
+# Ultra mode paints each GPU index in its own colour so one crowded line can
+# still be read; TEMP_COLORS exists for that purpose alone. Every full-mode
+# graph uses the same three inks whatever GPU it belongs to -- the line style
+# separates core temp / mem temp / power, the card it sits in separates GPUs.
 TEMP_COLORS = ["#4f8cff", "#3ddc84", "#ffb020", "#ff5555"]
-MEM_COLORS = ["#9cc8ff", "#a8f0c0", "#ffd28a", "#ff9c9c"]
+GRAPH_TEMP = "#4f8cff"
+GRAPH_MEM = "#9cc8ff"
 PW_COLOR = "#e8a23c"
 BG = "#14161a"
 CARD = "#1c1f26"
@@ -1140,8 +1145,9 @@ class MonitorApp:
             # One single line for the whole fleet: 0 12G 250W | 1 11G 220W ...
             # Only memory in use and power survive the shrink, both without
             # decimals and with no tag in front of them -- the G and the W say
-            # which is which. GPUs are told apart by their index, painted in
-            # the same colour as that card's curve in full mode.
+            # which is which. GPUs are told apart by their index, each painted
+            # in its own colour -- full-mode graphs all share one colour, so
+            # this row is the only place where the cards are colour-coded.
             row = tk.Frame(self.body, bg=CARD, highlightbackground=LINE,
                            highlightthickness=1)
             row.configure(height=ULTRA_ROW_H)
@@ -1262,8 +1268,8 @@ class MonitorApp:
             cv.pack(fill="x", pady=(6, 0))
             leg = tk.Frame(col, bg=BG)
             leg.pack(anchor="w", padx=2, pady=(3, 0))
-            tc = TEMP_COLORS[i % len(TEMP_COLORS)]
-            mc = MEM_COLORS[i % len(MEM_COLORS)]
+            tc = GRAPH_TEMP
+            mc = GRAPH_MEM
             for text, color in (("— 核温", tc), ("— 存温", mc),
                                 ("┄ 功耗", PW_COLOR)):
                 tk.Label(leg, text=text, bg=BG, fg=color,
@@ -1523,7 +1529,7 @@ class MonitorApp:
             y = pad_t + (h - pad_t - pad_b) * k / 4
             cv.create_line(pad_l, y, w - pad_r, y, fill=LINE)
             cv.create_text(4, y, text="%d°" % round(thi - (thi - tlo) * k / 4),
-                           fill=TEMP_COLORS[i % len(TEMP_COLORS)],
+                           fill=GRAPH_TEMP,
                            font=("Segoe UI", 8), anchor="w")
             cv.create_text(w - 4, y,
                            text="%dW" % round(phi - (phi - plo) * k / 4),
@@ -1536,13 +1542,11 @@ class MonitorApp:
         pts_t = [(px(j), ty(v)) for j, v in enumerate(self.hist[i])
                  if v is not None]
         if len(pts_t) >= 2:
-            cv.create_line(pts_t, fill=TEMP_COLORS[i % len(TEMP_COLORS)],
-                           width=2, smooth=True)
+            cv.create_line(pts_t, fill=GRAPH_TEMP, width=2, smooth=True)
         pts_m = [(px(j), ty(v)) for j, v in enumerate(self.mhist[i])
                  if v is not None]
         if len(pts_m) >= 2:
-            cv.create_line(pts_m, fill=MEM_COLORS[i % len(MEM_COLORS)],
-                           width=2, smooth=True)
+            cv.create_line(pts_m, fill=GRAPH_MEM, width=2, smooth=True)
         pts_p = [(px(j), py(v)) for j, v in enumerate(self.phist[i])
                  if v is not None]
         if len(pts_p) >= 2:

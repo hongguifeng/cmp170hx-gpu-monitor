@@ -32,7 +32,9 @@ Always-on-top floating window · compact mode (one row per GPU, stays out of the
 
 ![Compact mode](docs/img/window-compact.png)
 
-Always-on-top floating window · full mode (one card per GPU + 3-minute temp / memory-temp / power graphs):
+Always-on-top floating window · full mode (one card per GPU + 3-minute temp / memory-temp / power
+graphs; every card shares one palette -- blue = core temp, pale blue = memory temp, dashed amber =
+power -- so the cards are told apart by the card itself rather than by colour):
 
 ![Full mode](docs/img/window-full.png)
 
@@ -50,8 +52,9 @@ Web dashboard (`gpu-monitor.py`, optional, see below):
   full, empty file = compact, the word `ultra` inside = ultra, so old flag files keep working)
   - **ultra mode is a single line with no title bar at all**: every GPU shares that one line and keeps
     only the memory in use (bold, whole gigabytes, e.g. `12G`) and the power draw (whole watts, e.g.
-    `250W`, rolling over to `1kW` past 1000W). Cards are told apart by their index, painted in the
-    colour of that card's curve. Any part of the line drags the window, and `—` plus the layout button
+    `250W`, rolling over to `1kW` past 1000W). Cards are told apart by their index, each painted in its
+    own colour (blue / green / amber) purely to tell one cell from the next -- the full-mode curves no
+    longer change colour per card. Any part of the line drags the window, and `—` plus the layout button
     live at its right end; **every card gets a cell of exactly 90px** (sized to the widest reading we
     expect -- `99G` memory plus `999W` draw, with nothing left over), split apart by a 2px divider that
     is brighter than the box border, so a figure growing or shrinking on one card never shifts another
