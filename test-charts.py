@@ -138,12 +138,14 @@ for j in range(gmt.HIST):
         app.mhist[i].append(round(fm(j), 1))
         app.phist[i].append(round(fp(j), 1))
 for i in range(N):
-    app.cards[i]["info"].config(text=("频率  1350 / 810 MHz\n"
-                                      "占用  100 %      风扇  55 %\n"
-                                      "显存  11 / 12 GB\n"
-                                      "存温  54 °C\n"
-                                      "功耗  250 / 260 W"))
-    app.cards[i]["name"].config(text="GPU %d · CMP 170HX" % i)
+    # A fake reading goes through the app's own painting path, so what the
+    # card looks like here is what the tick produces -- the tinted 存温 / 功耗
+    # numbers included.
+    app.paint_card(i, {"name": "NVIDIA CMP 170HX", "temp": 62, "mtemp": 54,
+                       "power": 250, "power_limit": 260,
+                       "mem_used": 11, "mem_total": 12,
+                       "clocks": {"gpu": 1350, "mem": 810},
+                       "util": 100, "fan": 55})
     app.cards[i]["temp"].config(text="62°C")
 root.update()
 

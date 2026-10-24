@@ -250,6 +250,16 @@ GDDR6X（如 RTX 3090）的存温走 NVAPI。主要文件：
 - 现象：`python - <<'EOF'` 里写的 `'"\\u2014 "'` 到 Python 端变成 `'"\u2014 '`（反斜杠被吃掉、后面成了 unicode 转义），于是字符串替换默默不生效；或者直接报 `SyntaxError: truncated \uXXXX escape`。
 - 做法：heredoc 里的 Python 代码别写反斜杠转义 —— 特殊字符直接写字符本身，或用 `chr(0x2014)` / `bytes([13, 10])` 这类构造；要改文件内容就交给编辑工具做。
 
+### 存温 / 功耗读数跟曲线共用一套墨色
+
+- 规则：浅蓝 `GRAPH_MEM` = 存温、琥珀 `PW_COLOR` = 功耗，标签（“存温”/“功耗”）永远是灰的 `TXT`，只有数字上色；没读数的 `--` 用 `DIM`（“不是数字就不借用曲线色”，与曲线不给空数据画东西一致）。
+- 做法：`tinted_field(parent, tag, font, value_color, padx=...)` 把“标签 + 数值”拆成两个无边界 Label（带边框会在字间开一条比空格还宽的缝，数字就与等宽行不对齐了）；三种布局都走它。返回数值那个 Label，刷新时只 `config(text=..., fg=...)`。
+- 完全模式卡片原来是**一个 5 行 `info` Label**，现在 `info` 是个 Frame（`head` 三行 + `mrow` / `prow` 各一行），`card["info"]` 不再是 Label —— 谁再 `app.cards[i]["info"].config(text=...)` 就会报 `unknown option "-text"`（`test-charts.py` 踩过）。
+- 刷新卡片的代码从 `_tick` 里抽成了 `MonitorApp.paint_card(i, g)`：测试可以喂假读数直接断言 / 拍图，不必碰真 NVML（`app.paint_card(0, {})` 就是“失明”情况）。
+- 坑：`tk.Frame` 自带 padx/pady=1，`tk.Label` 自带 pady=1。完全模式文字区只剩 13px 余量，两个 row Frame + 两个数值 Label 会默默吃掉 6px（205 → 209）；必须显式 `padx=0, pady=0`，否则 `test-charts.py` 第 [3] 步的 slack 会缩。
+- 验证：`test-colors.py` 第 [C] 步——完全模式里拿 `paint_card` 喂假读数后按像素数卡片文字区的两种墨，**容差要收到 12**（大字号核温允许变 `#ffb020`，与琥珀只差 39）；精简 / 极简刚 `build_cards` 换完布局，PrintWindow 拍不到东西（见上两条），所以只断言 `cget("fg")`。
+- 重拍精简 / 极简的 docs 截图：`python shot-window.py docs/img/window-compact.png 440 137`（极简是 `356 28`），尺寸不对直接报错不会存错图；先用 `compact.flag` + 重启（或点布局按钮）把真实实例切到目标布局，曲线图以外的布局不需要历史数据。
+
 <!--
 ### 某某问题
 - 现象：...

@@ -699,6 +699,32 @@ def fmt_mem_used(used):
     except (TypeError, ValueError):
         return "--"
 
+
+def tinted_field(parent, tag, font, ink, padx=(0, 6)):
+    """Pack "tag  value" as two borderless labels; hand back the value label.
+
+    A tk.Label paints the whole widget in one colour, and it is the reading --
+    not the tag in front of it -- that has a curve of its own in the full-mode
+    charts, so the tag stays quiet while the number wears the curve's ink.
+    Borderless and unpadded on purpose: the default border would open a gap
+    wider than the spaces that separate tag from value, and then the columns
+    stop lining up with the monospace lines they sit among. The 1px pady a
+    Label also ships with is gone for the same kind of reason -- in full mode
+    two of those would take 4px out of the 13 the text block has spare, and
+    that slack is the only warning the next addition to the card gets.
+
+    The caller keeps the tag's trailing spaces, so each layout can keep the
+    spacing it had before the value moved into a label of its own.
+    """
+    t = tk.Label(parent, text=tag, bg=CARD, fg=TXT, font=font,
+                 bd=0, padx=0, pady=0)
+    t.pack(side="left")
+    v = tk.Label(parent, text="--", bg=CARD, fg=DIM, font=font,
+                 bd=0, padx=0, pady=0)
+    v.pack(side="left", padx=padx)
+    return v
+
+
 user32 = ctypes.WinDLL("user32")
 user32.GetSystemMetrics.restype = ctypes.c_int
 
@@ -1200,9 +1226,10 @@ class MonitorApp:
                 mu = tk.Label(cell, text="--", bg=CARD, fg=FG, font=bold,
                               padx=0)
                 mu.pack(side="left", fill="y")
-                # Power sits next to it, quieter and in its own unit; that is
-                # what tells the two numbers apart now that the tags are gone.
-                mp = tk.Label(cell, text="--", bg=CARD, fg=TXT, font=mono)
+                # Power sits next to the memory figure in the curve's own
+                # amber: it is the same reading the chart draws, so it should
+                # not need a tag to say which number is which.
+                mp = tk.Label(cell, text="--", bg=CARD, fg=PW_COLOR, font=mono)
                 mp.pack(side="left", padx=(4, 4), fill="y")
                 self.cards.append({"name": idx, "used": mu, "pw": mp,
                                    "cell": cell})
@@ -1257,12 +1284,13 @@ class MonitorApp:
                                 font=("Segoe UI", 12, "bold"), anchor="w")
                 temp.pack(side="left", padx=(0, 6))
                 mono = ("Consolas", 9)
-                mt = tk.Label(card, text="", bg=CARD, fg=TXT, font=mono)
-                mt.pack(side="left", padx=(0, 6))
+                # 存温 and 功耗 are the two readings that own a curve in full
+                # mode, so their numbers wear that curve's colour in every
+                # layout: one colour per meaning, whichever layout is up.
+                mt = tinted_field(card, "存温 ", mono, GRAPH_MEM)
                 mm = tk.Label(card, text="", bg=CARD, fg=TXT, font=mono)
                 mm.pack(side="left", padx=(0, 6))
-                mp = tk.Label(card, text="", bg=CARD, fg=TXT, font=mono)
-                mp.pack(side="left")
+                mp = tinted_field(card, "功耗 ", mono, PW_COLOR, padx=(0, 0))
                 self.cards.append({"name": name, "temp": temp,
                                    "mtemp": mt, "mem": mm, "pw": mp})
                 self.canvases.append(None)
@@ -1283,10 +1311,30 @@ class MonitorApp:
             temp = tk.Label(card, text="--", bg=CARD, fg=DIM,
                             font=("Segoe UI", 32, "bold"))
             temp.pack(anchor="w", padx=10)
-            info = tk.Label(card, text="", bg=CARD, fg=TXT, justify="left",
-                            font=("Consolas", 11), anchor="w")
+            # The three lines nobody plots stay one label. 存温 and 功耗 leave
+            # it and become their own lines, because a label only holds one
+            # colour and those two readings are the ones with a curve of their
+            # own in the charts below: the number in the card and the curve
+            # under it are meant to be the same ink. info stays the frame
+            # around the whole text block, which is what the geometry checks
+            # measure.
+            info = tk.Frame(card, bg=CARD, padx=0, pady=0)
             info.pack(anchor="w", padx=10, pady=(0, 8))
-            self.cards.append({"name": name, "temp": temp, "info": info})
+            head = tk.Label(info, text="", bg=CARD, fg=TXT, justify="left",
+                            font=("Consolas", 11), anchor="w")
+            head.pack(anchor="w")
+            font11 = ("Consolas", 11)
+            # padx/pady=0 everywhere: a tk.Frame ships 1px of internal padding
+            # on each side, and two of them would eat 6px of the 13px the text
+            # block has left in the card (test-charts.py [3] watches that).
+            mrow = tk.Frame(info, bg=CARD, padx=0, pady=0)
+            mrow.pack(anchor="w")
+            mt = tinted_field(mrow, "存温  ", font11, GRAPH_MEM, padx=(0, 0))
+            prow = tk.Frame(info, bg=CARD, padx=0, pady=0)
+            prow.pack(anchor="w")
+            pw = tinted_field(prow, "功耗  ", font11, PW_COLOR, padx=(0, 0))
+            self.cards.append({"name": name, "temp": temp, "info": info,
+                               "head": head, "mtemp": mt, "pw": pw})
 
             # Full mode is the only layout that draws history graphs; compact
             # and ultra never get past their own branches above. Two charts
@@ -1346,6 +1394,68 @@ class MonitorApp:
             log("tick error:\n" + traceback.format_exc())
         self.root.after(1000, self.tick)
 
+    def paint_card(self, i, g):
+        """Write one GPU reading into one card, in the layout now on screen.
+
+        Split out of the tick so a test can hand it a fake reading and see
+        what a card actually ends up looking like -- the colours below are the
+        whole point of the card and nothing else draws them.
+        """
+        card = self.cards[i]
+        t = g.get("temp")
+        m = g.get("mtemp")
+        p = g.get("power")
+        # An ultra card has no temperature label at all: the temperature is
+        # precisely what that layout throws away.
+        if "temp" in card:
+            if t is not None:
+                col = "#ff5555" if t >= 80 else "#ffb020" if t >= 68 else "#3ddc84"
+                card["temp"].config(text="%d°C" % t, fg=col)
+            else:
+                card["temp"].config(text="--", fg=DIM)
+        if self.mode == MODE_ULTRA:
+            card["name"].config(text=str(i))
+        elif self.mode == MODE_COMPACT:
+            card["name"].config(text="GPU %d" % i)
+        else:
+            card["name"].config(
+                text="GPU %d · %s" % (i, pretty_name(g.get("name"))))
+        mem = "%s / %s GB" % (g.get("mem_used", "?"), g.get("mem_total", "?"))
+        pwtxt = ("%s / %s W" % (p, g.get("power_limit", "?"))
+                 if p is not None else "--")
+        mtxt = ("%d °C" % m) if m is not None else "--"
+        # A reading with no data stays DIM rather than taking the colour of
+        # the curve it belongs to: "--" is not a number, and the charts draw
+        # nothing for it either.
+        if self.mode == MODE_ULTRA:
+            card["used"].config(text=fmt_mem_used(g.get("mem_used")))
+            card["pw"].config(text=fmt_power_w(p),
+                              fg=PW_COLOR if p is not None else DIM)
+        elif self.mode == MODE_COMPACT:
+            card["mtemp"].config(text=mtxt,
+                                 fg=GRAPH_MEM if m is not None else DIM)
+            card["mem"].config(text="显存 %s/%sG" % (
+                g.get("mem_used", "?"), g.get("mem_total", "?")))
+            pwshort = ("%gW" % p) if p is not None else "--"
+            card["pw"].config(text=pwshort,
+                              fg=PW_COLOR if p is not None else DIM)
+        else:
+            # Only the first three lines share a label; the two tinted
+            # readings sit on lines of their own, next to the charts that
+            # draw them in the same ink.
+            card["head"].config(text=(
+                "频率  %s / %s MHz\n"
+                "占用  %s %%      风扇  %s %%\n"
+                "显存  %s" % (
+                    g.get("clocks", {}).get("gpu", "?"),
+                    g.get("clocks", {}).get("mem", "?"),
+                    g.get("util", "?"), g.get("fan", "?"),
+                    mem)))
+            card["mtemp"].config(text=mtxt,
+                                 fg=GRAPH_MEM if m is not None else DIM)
+            card["pw"].config(text=pwtxt,
+                              fg=PW_COLOR if p is not None else DIM)
+
     def _tick(self):
         if not NVML_STATE["ok"]:
             nvml_reinit()  # rate-limited retry while driver is away
@@ -1395,47 +1505,7 @@ class MonitorApp:
             self.hist[i].append(t if t is not None else None)
             self.mhist[i].append(m if m is not None else None)
             self.phist[i].append(p if p is not None else None)
-            card = self.cards[i]
-            # An ultra card has no temperature label at all: the temperature is
-            # precisely what that layout throws away.
-            if "temp" in card:
-                if t is not None:
-                    col = "#ff5555" if t >= 80 else "#ffb020" if t >= 68 else "#3ddc84"
-                    card["temp"].config(text="%d°C" % t, fg=col)
-                else:
-                    card["temp"].config(text="--", fg=DIM)
-            if self.mode == MODE_ULTRA:
-                card["name"].config(text=str(i))
-            elif self.mode == MODE_COMPACT:
-                card["name"].config(text="GPU %d" % i)
-            else:
-                card["name"].config(
-                    text="GPU %d · %s" % (i, pretty_name(g.get("name"))))
-            mem = "%s / %s GB" % (g.get("mem_used", "?"), g.get("mem_total", "?"))
-            pwtxt = ("%s / %s W" % (p, g.get("power_limit", "?"))
-                     if p is not None else "--")
-            mtxt = ("%d °C" % m) if m is not None else "--"
-            if self.mode == MODE_ULTRA:
-                card["used"].config(text=fmt_mem_used(g.get("mem_used")))
-                card["pw"].config(text=fmt_power_w(p))
-            elif self.mode == MODE_COMPACT:
-                card["mtemp"].config(text="存温 %s" % mtxt)
-                card["mem"].config(text="显存 %s/%sG" % (
-                    g.get("mem_used", "?"), g.get("mem_total", "?")))
-                pwshort = ("%gW" % p) if p is not None else "--"
-                card["pw"].config(text="功耗 " + pwshort)
-            else:
-                info = ("频率  %s / %s MHz\n"
-                        "占用  %s %%      风扇  %s %%\n"
-                        "显存  %s\n"
-                        "存温  %s\n"
-                        "功耗  %s" % (
-                            g.get("clocks", {}).get("gpu", "?"),
-                            g.get("clocks", {}).get("mem", "?"),
-                            g.get("util", "?"), g.get("fan", "?"),
-                            mem, mtxt, pwtxt))
-                card["info"].config(text=info)
-
+            self.paint_card(i, g)
             self.draw_graph(i)
 
         # no usable data for 5 straight seconds -> driver torn down or

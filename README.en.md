@@ -24,18 +24,20 @@ System tray icon — always shows the temperature of the **hottest GPU** and cha
 ![Tray icons](docs/img/tray-icons.png)
 
 Always-on-top floating window · ultra mode (every GPU squeezed onto one line, memory in use in bold
-plus power draw, and not even a title bar):
+plus an amber power draw, and not even a title bar):
 
 ![Ultra mode](docs/img/window-ultra.png)
 
-Always-on-top floating window · compact mode (one row per GPU, stays out of the way):
+Always-on-top floating window · compact mode (one row per GPU -- memory temp in pale blue, power in
+amber -- and stays out of the way):
 
 ![Compact mode](docs/img/window-compact.png)
 
 Always-on-top floating window · full mode (one card per GPU + two stacked 3-minute charts: the upper
 one carries the power draw on a watt scale of its own, the lower one core temp and memory temp on
 one shared degree scale; every card shares one palette -- blue = core temp, pale blue = memory temp,
-dashed amber = power -- so the cards are told apart by the card itself rather than by colour):
+amber = power -- and the 存温 / 功耗 readings inside the card wear the very same ink, so the cards
+are told apart by the card itself rather than by colour):
 
 ![Full mode](docs/img/window-full.png)
 
@@ -74,6 +76,11 @@ Web dashboard (`gpu-monitor.py`, optional, see below):
     corner, so a window you placed stays exactly where you put it
   - after a display resolution / monitor switch the window is re-placed and always ends up inside
     the desktop (log keyword `display change`)
+- **Colour means the reading, never the GPU** -- pale blue `#9cc8ff` is memory temperature and amber
+  `#e8a23c` is power draw, and **a number wears the ink of its own curve**: the `存温 54 °C` /
+  `功耗 250 / 260 W` lines inside a full-mode card, both numbers in a compact row and the power figure
+  in ultra mode. Nobody has to work out which line of which card a curve belongs to. The labels stay
+  quiet grey and a reading that is not there (`--`) borrows no colour
 - **Per-GPU readings** (NVML) — name, core temperature, GPU / memory clocks, utilisation, fan,
   VRAM usage, live power draw and power limit
 - **Full-mode layout scales with the GPU count** — one 250px column per card, so three GPUs get a
