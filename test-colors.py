@@ -195,6 +195,17 @@ for i in range(N):
         tag = app.cards[i][key].master.winfo_children()[0]
         if str(tag.cget("fg")) != gmt.TXT:
             failures.append("card %d: the %s tag is tinted too" % (i, key))
+    # The watt ceiling next to the power figure is context, not a reading, so
+    # it keeps the quiet ink -- and the amber label has to hold the figure
+    # alone, unit and all, which is what makes "250" and " / 260 W" two labels.
+    pw_txt = str(app.cards[i]["pw"].cget("text"))
+    lim = app.cards[i]["plim"]
+    if "W" in pw_txt or not str(lim.cget("text")).startswith(" / "):
+        failures.append("card %d: power split is off: %r then %r"
+                        % (i, pw_txt, lim.cget("text")))
+    if str(lim.cget("fg")) != gmt.TXT:
+        failures.append("card %d: the watt ceiling wears %s, not the quiet %s"
+                        % (i, lim.cget("fg"), gmt.TXT))
 
 # The same two readings in the other two layouts, and what a missing reading
 # looks like: "--" is not a number, so it borrows no colour (the charts draw

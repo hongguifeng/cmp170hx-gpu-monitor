@@ -620,11 +620,10 @@ def tray_image_for(temps):
 
 # ---------------------------------------------------------------- UI
 HIST = 180  # seconds of history
-# Ultra mode paints each GPU index in its own colour so one crowded line can
-# still be read; TEMP_COLORS exists for that purpose alone. Every full-mode
-# graph uses the same three inks whatever GPU it belongs to -- the line style
-# separates core temp / mem temp / power, the card it sits in separates GPUs.
-TEMP_COLORS = ["#4f8cff", "#3ddc84", "#ffb020", "#ff5555"]
+# Every full-mode graph uses the same three inks whatever GPU it belongs to --
+# the line style separates core temp / mem temp / power, the card it sits in
+# separates GPUs. There used to be a per-GPU palette here for the ultra line's
+# index digits; that line has no index any more, so nothing paints with it.
 GRAPH_TEMP = "#4f8cff"
 GRAPH_MEM = "#9cc8ff"
 PW_COLOR = "#e8a23c"
@@ -663,20 +662,21 @@ GRAPH_PAD_B = 16     # room for "now" / "-3 min" on the bottom chart
 GRAPH_PAD_B_TOP = 10 # the upper chart shares the time axis, so it needs less
 GRAPH_KEY_Y = 7      # vertical centre of the key line
 GRAPH_KEY_GAP = 56   # second key sits this far right of the first (key is 39px)
-# Ultra mode packs every GPU into one line: "0 12G 250W | 1 11G 220W". Only
-# the memory in use and the power draw survive, both rounded to whole numbers
-# and with no tag in front of them, and there is no title bar above them --
-# just this one line.
-ULTRA_SEG_W = 90       # every GPU gets a cell of exactly this width, so a
+# Ultra mode packs every GPU into one line: "12G 250W | 11G 220W". Only the
+# memory in use and the power draw survive, both rounded to whole numbers and
+# with no tag in front of them, and there is no title bar above them -- just
+# this one line. Nothing labels which GPU is which: the cells keep the GPU
+# order and a brighter divider separates them, which is all the room there is.
+ULTRA_SEG_W = 73       # every GPU gets a cell of exactly this width, so a
                        # figure changing on one card cannot shove the others
                        # sideways. Sized for the widest reading we expect and
-                       # nothing more: index 13+10, "99G" 25, "999W" 34+8
+                       # nothing more: 6 left inset, "99G" 25, "999W" 34+8
 ULTRA_SEP_W = 6        # divider between two cells: 2px bar plus its 2+2 padding
 ULTRA_SEP_COLOR = "#4a5262"   # brighter than the box border, so the cells are
                               # clearly split apart without shouting at the data
 ULTRA_PAD = 12         # left + right padding around the single row
 ULTRA_BTN_W = 62       # — plus the layout button, with their padding
-ULTRA_MIN_W = 176      # floor: one cell and the two buttons still fit
+ULTRA_MIN_W = 147      # floor: one cell and the two buttons (12 + 73 + 62)
 ULTRA_ROW_H = 26       # the line itself, tall enough for the dash button
 ULTRA_H = ULTRA_ROW_H + 2   # plus the 1px padding above and below it
 
@@ -1192,12 +1192,11 @@ class MonitorApp:
         self.mhist = [deque(maxlen=HIST) for _ in range(n)]
         self.phist = [deque(maxlen=HIST) for _ in range(n)]
         if self.mode == MODE_ULTRA:
-            # One single line for the whole fleet: 0 12G 250W | 1 11G 220W ...
+            # One single line for the whole fleet: 12G 250W | 11G 220W ...
             # Only memory in use and power survive the shrink, both without
             # decimals and with no tag in front of them -- the G and the W say
-            # which is which. GPUs are told apart by their index, each painted
-            # in its own colour -- full-mode graphs all share one colour, so
-            # this row is the only place where the cards are colour-coded.
+            # which is which. Nothing says which GPU a cell is: the cells keep
+            # the GPU order, and the brighter divider is what separates them.
             row = tk.Frame(self.body, bg=CARD, highlightbackground=LINE,
                            highlightthickness=1)
             row.configure(height=ULTRA_ROW_H)
@@ -1217,22 +1216,22 @@ class MonitorApp:
                                 height=ULTRA_ROW_H)
                 cell.pack_propagate(False)
                 cell.pack(side="left", fill="y")
-                idx = tk.Label(cell, text=str(i), bg=CARD,
-                               fg=TEMP_COLORS[i % len(TEMP_COLORS)],
-                               font=("Segoe UI", 9, "bold"))
-                idx.pack(side="left", padx=(6, 4), fill="y")
                 # Memory in use is the figure you actually scan here, so it
-                # gets weight and the brightest ink on the line.
+                # gets weight and the brightest ink on the line. The 6px lead-
+                # in is what the index label's padding used to provide; without
+                # it the first figure would sit right on the cell's border.
                 mu = tk.Label(cell, text="--", bg=CARD, fg=FG, font=bold,
                               padx=0)
-                mu.pack(side="left", fill="y")
+                mu.pack(side="left", padx=(6, 0), fill="y")
                 # Power sits next to the memory figure in the curve's own
                 # amber: it is the same reading the chart draws, so it should
                 # not need a tag to say which number is which.
                 mp = tk.Label(cell, text="--", bg=CARD, fg=PW_COLOR, font=mono)
                 mp.pack(side="left", padx=(4, 4), fill="y")
-                self.cards.append({"name": idx, "used": mu, "pw": mp,
-                                   "cell": cell})
+                # No index any more, so a cell carries no label saying which
+                # GPU it belongs to -- "cell" is the handle the geometry checks
+                # measure, and the two figures are all the cell shows.
+                self.cards.append({"used": mu, "pw": mp, "cell": cell})
                 self.canvases.append(None)
                 self.pw_canvases.append(None)
             # This layout has no title bar at all: the title and the status
@@ -1333,8 +1332,14 @@ class MonitorApp:
             prow = tk.Frame(info, bg=CARD, padx=0, pady=0)
             prow.pack(anchor="w")
             pw = tinted_field(prow, "功耗  ", font11, PW_COLOR, padx=(0, 0))
+            # The watt ceiling follows the amber figure in the quiet ink, so
+            # the colour picks out the one number that has a curve of its own.
+            plim = tk.Label(prow, text="", bg=CARD, fg=TXT, font=font11,
+                            bd=0, padx=0, pady=0)
+            plim.pack(side="left")
             self.cards.append({"name": name, "temp": temp, "info": info,
-                               "head": head, "mtemp": mt, "pw": pw})
+                               "head": head, "mtemp": mt, "pw": pw,
+                               "plim": plim})
 
             # Full mode is the only layout that draws history graphs; compact
             # and ultra never get past their own branches above. Two charts
@@ -1413,16 +1418,21 @@ class MonitorApp:
                 card["temp"].config(text="%d°C" % t, fg=col)
             else:
                 card["temp"].config(text="--", fg=DIM)
-        if self.mode == MODE_ULTRA:
-            card["name"].config(text=str(i))
-        elif self.mode == MODE_COMPACT:
+        # An ultra cell carries no name at all: there is no room for one on
+        # that line, and the order of the cells already says which GPU it is.
+        if self.mode == MODE_COMPACT:
             card["name"].config(text="GPU %d" % i)
-        else:
+        elif self.mode != MODE_ULTRA:
             card["name"].config(
                 text="GPU %d · %s" % (i, pretty_name(g.get("name"))))
         mem = "%s / %s GB" % (g.get("mem_used", "?"), g.get("mem_total", "?"))
-        pwtxt = ("%s / %s W" % (p, g.get("power_limit", "?"))
-                 if p is not None else "--")
+        pwtxt = ("%s" % p) if p is not None else "--"
+        # The ceiling printed after the figure is context, not a reading, so it
+        # keeps the quiet ink: the amber is meant to mark exactly one number --
+        # the watts the card is burning right now, which is what the upper
+        # chart plots. Without a reading there is no ceiling to show either.
+        pwtail = (" / %s W" % g.get("power_limit", "?")
+                  if p is not None else "")
         mtxt = ("%d °C" % m) if m is not None else "--"
         # A reading with no data stays DIM rather than taking the colour of
         # the curve it belongs to: "--" is not a number, and the charts draw
@@ -1455,6 +1465,7 @@ class MonitorApp:
                                  fg=GRAPH_MEM if m is not None else DIM)
             card["pw"].config(text=pwtxt,
                               fg=PW_COLOR if p is not None else DIM)
+            card["plim"].config(text=pwtail)
 
     def _tick(self):
         if not NVML_STATE["ok"]:

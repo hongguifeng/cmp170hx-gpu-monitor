@@ -1,8 +1,26 @@
-"""Ultra mode keeps its per-GPU index colours (only full-mode graphs were unified).
+"""Ultra mode shows two figures per GPU and nothing else -- no index.
 
-The single crowded line tells GPUs apart by the index digit alone, so GPU 0 has
-to stay blue, GPU 1 green and GPU 2 amber. The pale mem-temp inks, which only
-ever existed inside a full-mode graph, must not show up here.
+What survives on the single line is the memory figure (brightest ink, bold) and
+the power figure (the amber the power chart uses). The line used to lead with a
+per-GPU index digit painted in that GPU's own colour; the index is gone, so no
+blue or green may appear on the line any more, and a cell must lead with the
+memory figure instead of an index standing in front of it.
+
+Two things are checked by pixels and one is not, because colour alone cannot
+settle it:
+
+* the memory figure (FG white) and the power figure (PW_COLOR amber) must both
+  be present in every cell -- a cell that painted nothing is a bug;
+* the two separable index inks (blue, green) must be absent;
+* the old third index amber sits ~39 from the power amber and the pale mem-temp
+  inks sit ~15 from ClearType's fringe on amber glyphs, so no pixel test can
+  tell them apart from the figures. test-geometry.py [8] proves the index label
+  does not exist any more, which is the stronger statement anyway.
+
+The window is built in ultra mode from the start (load_mode is asked before the
+app exists) and the readings go in through paint_card, because PrintWindow on a
+root that has just been switched between layouts has repeatedly caught a frame
+that was never drawn.
 """
 import ctypes
 import importlib.util
@@ -16,17 +34,24 @@ sys.excepthook = sys.__excepthook__
 
 import win32gui
 import win32ui
-from PIL import Image
+from PIL import Image, ImageGrab
 
 user32 = ctypes.WinDLL("user32")
 GA_ROOT = 2
 
 N = 3
-EXPECT = {"gpu0 blue": "#4f8cff", "gpu1 green": "#3ddc84",
-          "gpu2 amber": "#ffb020"}
-INKS = list(EXPECT.values())          # in GPU order
-GONE = {"pale mem 1": "#a8f0c0", "pale mem 2": "#ffd28a",
-        "pale mem 3": "#ff9c9c"}
+FAKE = {"name": "NVIDIA CMP 170HX", "temp": 62, "mtemp": 54, "power": 250,
+        "power_limit": 260, "mem_used": 11, "mem_total": 12,
+        "clocks": {"gpu": 1350, "mem": 810}, "util": 100, "fan": 55}
+# 9pt glyphs are mostly blend plus ClearType fringe, so "present" needs a wide
+# net (90) and "absent" a tight one (30). Measured on this machine: the fringe
+# of the amber digits reaches 10 pixels within 45 of the index blue, none
+# within 30.
+PRESENT_TOL = 90
+ABSENT_TOL = 30
+PRESENT_MIN = 10
+MUST_BE_THERE = {"memory figure": gmt.FG, "power figure": gmt.PW_COLOR}
+MUST_BE_GONE = {"index blue": gmt.GRAPH_TEMP, "index green": "#3ddc84"}
 
 
 class FakeTray:
@@ -40,6 +65,11 @@ def rgb(h):
 
 def dist(a, b):
     return sum((x - y) ** 2 for x, y in zip(a, b)) ** 0.5
+
+
+def count_near(im, hexcode, tol):
+    c = rgb(hexcode)
+    return sum(1 for px in im.getdata() if dist(px, c) <= tol)
 
 
 def print_window(root):
@@ -67,32 +97,31 @@ def print_window(root):
     return img, rect
 
 
+gmt.NVML_STATE["ngpu"] = N
+gmt.load_mode = lambda: gmt.MODE_ULTRA
 root = tk.Tk()
 app = gmt.MonitorApp(root, tray_icon=FakeTray())
 sys.excepthook = sys.__excepthook__
 for aid in root.tk.call("after", "info"):
     root.after_cancel(aid)
 app.mode = gmt.MODE_ULTRA
-app.ui_ngpu = N
-app.build_cards(N)
-app.apply_geometry()
 root.geometry("+120+300")
-for _ in range(6):
-    root.update_idletasks()
-    root.update()
-    root.update()
+for i in range(N):
+    app.paint_card(i, dict(FAKE, power=250 + i, mem_used=11 + i))
+root.update()
 
 img, rect = print_window(root)
-from PIL import ImageGrab
-shot = ImageGrab.grab(bbox=rect, all_screens=True).convert("RGB")
+grab = ImageGrab.grab(bbox=rect, all_screens=True).convert("RGB")
+
 
 # Whichever capture actually shows the line (the card background) wins.
 def painted(im):
     return sum(1 for px in im.getdata() if px == rgb(gmt.CARD))
 
-which = "PrintWindow" if painted(img) >= painted(shot) else "screen grab"
-print("using %s (%d card pixels vs %d)" % (which, painted(img), painted(shot)))
-img = img if which == "PrintWindow" else shot
+
+which = "PrintWindow" if painted(img) >= painted(grab) else "screen grab"
+print("using %s (%d card pixels vs %d)" % (which, painted(img), painted(grab)))
+img = img if which == "PrintWindow" else grab
 
 row = app.ultra_row
 x = row.winfo_rootx() - rect[0]
@@ -102,35 +131,38 @@ crop.save("shot-ultra-crop.png")
 img.save("shot-ultra.png")
 
 failures = []
-# A 9pt digit is mostly anti-aliased blend, so "pixels close to the ink" is the
-# wrong measure. Take the real ink in each index label -- pixels that are
-# nowhere near the card background -- and ask which candidate colour each one
-# is closest to.
-for i in range(N):
-    lbl = app.cards[i]["name"]
-    x = lbl.winfo_rootx() - rect[0]
-    y = lbl.winfo_rooty() - rect[1]
-    sub = img.crop((x, y, x + lbl.winfo_width(), y + lbl.winfo_height()))
-    votes, ink = {}, 0
-    for px in sub.getdata():
-        if dist(px, rgb(gmt.CARD)) < 80:
-            continue                       # plain background, not ink
-        ink += 1
-        best = min(INKS, key=lambda c: dist(px, rgb(c)))
-        votes[best] = votes.get(best, 0) + 1
-    share = votes.get(INKS[i], 0) / max(ink, 1)
-    print("index %d wants %s: ink=%d votes=%s share=%.2f"
-          % (i, INKS[i], ink, votes, share))
-    if ink < 20 or share < 0.6:
-        failures.append("index %d does not read as %s (%.2f)"
-                        % (i, INKS[i], share))
-
-for label, hexcode in GONE.items():
-    n = sum(1 for px in crop.getdata() if dist(px, rgb(hexcode)) <= 30)
-    print("%-13s %d" % (label, n))
+for label, hexcode in MUST_BE_GONE.items():
+    n = count_near(crop, hexcode, ABSENT_TOL)
+    print("%-12s in the whole row: %d" % (label, n))
     if n:
-        failures.append("%s (%s) still present in the row (%d pixels)"
+        failures.append("%s (%s) still painted on the line (%d pixels)"
                         % (label, hexcode, n))
+
+for i in range(N):
+    cell = app.cards[i]["cell"]
+    cx = cell.winfo_rootx() - rect[0]
+    cy = cell.winfo_rooty() - rect[1]
+    sub = img.crop((cx, cy, cx + cell.winfo_width(), cy + cell.winfo_height()))
+    ink = sum(1 for px in sub.getdata() if dist(px, rgb(gmt.CARD)) >= 80)
+    got = {name: count_near(sub, hexcode, PRESENT_TOL)
+           for name, hexcode in MUST_BE_THERE.items()}
+    # the leftmost glyph in the cell: an index would stand here, the memory
+    # figure starts 6px in (and Tk's own ~3px bearing on top of that)
+    first = next((col for col in range(sub.width)
+                  if any(dist(sub.getpixel((col, r)), rgb(gmt.CARD)) >= 80
+                         for r in range(sub.height))), None)
+    print("cell %d at +%d: ink=%d, %s" % (i, -1 if first is None else first,
+                                          ink, got))
+    if ink < 20:
+        failures.append("cell %d painted nothing (%d ink pixels)" % (i, ink))
+    for name, n in got.items():
+        if n < PRESENT_MIN:
+            failures.append("cell %d: %s missing (%d px, want %d)"
+                            % (i, name, n, PRESENT_MIN))
+    # An index in front of the figures pushed them ~23px into the cell.
+    if first is None or first > 12:
+        failures.append("cell %d: first figure starts %s px in, something sits "
+                        "in front of it" % (i, first))
 
 root.destroy()
 print("FAILURES:", failures)

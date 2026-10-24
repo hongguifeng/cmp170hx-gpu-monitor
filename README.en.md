@@ -55,13 +55,12 @@ Web dashboard (`gpu-monitor.py`, optional, see below):
   full, empty file = compact, the word `ultra` inside = ultra, so old flag files keep working)
   - **ultra mode is a single line with no title bar at all**: every GPU shares that one line and keeps
     only the memory in use (bold, whole gigabytes, e.g. `12G`) and the power draw (whole watts, e.g.
-    `250W`, rolling over to `1kW` past 1000W). Cards are told apart by their index, each painted in its
-    own colour (blue / green / amber) purely to tell one cell from the next -- the full-mode curves no
-    longer change colour per card. Any part of the line drags the window, and `—` plus the layout button
-    live at its right end; **every card gets a cell of exactly 90px** (sized to the widest reading we
-    expect -- `99G` memory plus `999W` draw, with nothing left over), split apart by a 2px divider that
-    is brighter than the box border, so a figure growing or shrinking on one card never shifts another
-    card's numbers (3 cards = 356px, 1 card = 176px) and the height stays 28px
+    `250W`, rolling over to `1kW` past 1000W, in the curve's amber). Nothing labels which GPU a cell
+    is -- the cells keep the GPU order and a brighter divider separates them. Any part of the line
+    drags the window, and `—` plus the layout button live at its right end; **every card gets a cell of
+    exactly 73px** (sized to the widest reading we expect -- `99G` memory plus `999W` draw, with nothing
+    left over), so a figure growing or shrinking on one card never shifts another card's numbers
+    (3 cards = 305px, 1 card = 147px) and the height stays 28px
   - by default it sits flush in the bottom-right corner: its right edge on the screen edge and its
     bottom edge on the taskbar's top (it follows the taskbar's height and docked side)
   - **z-order** — always above ordinary windows but below the taskbar, so dragging it over the
@@ -80,7 +79,8 @@ Web dashboard (`gpu-monitor.py`, optional, see below):
   `#e8a23c` is power draw, and **a number wears the ink of its own curve**: the `存温 54 °C` /
   `功耗 250 / 260 W` lines inside a full-mode card, both numbers in a compact row and the power figure
   in ultra mode. Nobody has to work out which line of which card a curve belongs to. The labels stay
-  quiet grey and a reading that is not there (`--`) borrows no colour
+  quiet grey, so does the watt ceiling after the slash (only the watts being burned right now are a
+  reading), and a reading that is not there (`--`) borrows no colour
 - **Per-GPU readings** (NVML) — name, core temperature, GPU / memory clocks, utilisation, fan,
   VRAM usage, live power draw and power limit
 - **Full-mode layout scales with the GPU count** — one 250px column per card, so three GPUs get a

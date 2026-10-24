@@ -63,13 +63,22 @@ def cancel_after(root):
         root.after_cancel(aid)
 
 
+def card_box(c):
+    """The widget that is one card, however the current layout builds it.
+
+    Full and compact print a GPU name, so the name label's master is the card
+    frame. An ultra cell has no name at all -- the cell itself is the card.
+    """
+    return c["name"].master if "name" in c else c["cell"]
+
+
 def state(app, root):
     root.update()
     h = root.winfo_height()
     body = app.body.winfo_reqheight()
     # ultra has no title bar at all, so the body starts at the very top
     base = 32 if app.header.winfo_manager() == "pack" else 0
-    mapped = sum(1 for c in app.cards if c["name"].master.winfo_ismapped())
+    mapped = sum(1 for c in app.cards if card_box(c).winfo_ismapped())
     fits = base + body <= h
     print("  ui_ngpu=%d cards=%d mapped=%d win_h=%d body_req=%d %s" % (
         app.ui_ngpu, len(app.cards), mapped, h, body,
@@ -82,8 +91,8 @@ def width_state(app, root):
     req = app.body.winfo_reqwidth()
     win = root.winfo_width()
     edge = root.winfo_rootx() + win
-    right = max(c["name"].master.winfo_rootx()
-                + c["name"].master.winfo_width() for c in app.cards)
+    right = max(card_box(c).winfo_rootx()
+                + card_box(c).winfo_width() for c in app.cards)
     ok = req <= win and right <= edge
     print("  win_w=%d body_req=%d rightmost=%d edge=%d %s" % (
         win, req, right, edge, "fits" if ok else "CLIPPED"))
@@ -189,7 +198,7 @@ def main():
     corner5 = (x5 + w5, y5 + h5)
     req = app._ultra_need()
     mapped = sum(1 for c in app.cards
-                 if c["name"].winfo_ismapped() and c["used"].winfo_ismapped()
+                 if c["cell"].winfo_ismapped() and c["used"].winfo_ismapped()
                  and c["pw"].winfo_ismapped())
     print("  ultra 3 GPUs %dx%d at (%d,%d), corner %s, line_needs=%d mapped=%d" % (
         w5, h5, x5, y5, corner5, req, mapped))
@@ -200,6 +209,9 @@ def main():
     ok &= corner5 == corner
     ok &= req <= w5 and mapped == 3
     ok &= app.header.winfo_manager() == ""
+    # Nothing on this line says which GPU a cell is: no index label survived,
+    # a cell holds its two figures and nothing else.
+    ok &= all(sorted(c) == ["cell", "pw", "used"] for c in app.cards)
 
     # Every card owns a cell of exactly ULTRA_SEG_W, evenly spaced. That is the
     # whole point: a number changing on GPU 0 must not push GPU 1's figures.
@@ -239,8 +251,10 @@ def main():
         ((2000, 2112), 0, True),        # parked inside: completely unreachable
         ((2000, 2132), 0, True),        # below its top edge: same story
     ]
+    ultra_w = m.ULTRA_PAD + m.ULTRA_SEG_W * 3 + m.ULTRA_SEP_W * 2 \
+        + m.ULTRA_BTN_W
     for (x, y), want_strip, want_flip in cases:
-        wr = (x, y, x + 356, y + 28)    # the ultra line, as it is now
+        wr = (x, y, x + ultra_w, y + 28)  # the ultra line, as it is now
         share = m.covered_share(wr, tb)
         strip = m.visible_strip(wr, tb)
         flip = (share >= m.TASKBAR_COVER_LIMIT
