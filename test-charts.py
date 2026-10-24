@@ -157,17 +157,18 @@ ok &= (w, h) == want
 for i in range(N):
     cv, pcv = app.canvases[i], app.pw_canvases[i]
     col = cv.master
-    print("[2] card %d: temp chart x=%d %dx%d y=%d..%d | power y=%d..%d | col y=%d..%d"
-          % (i, rootx(cv, root), cv.winfo_width(), cv.winfo_height(),
-             rooty(cv, root), rooty(cv, root) + cv.winfo_height(),
+    print("[2] card %d: power chart x=%d %dx%d y=%d..%d | temps y=%d..%d | col y=%d..%d"
+          % (i, rootx(pcv, root), pcv.winfo_width(), pcv.winfo_height(),
              rooty(pcv, root), rooty(pcv, root) + pcv.winfo_height(),
+             rooty(cv, root), rooty(cv, root) + cv.winfo_height(),
              rooty(col, root), rooty(col, root) + col.winfo_height()))
     ok &= (cv.winfo_width(), cv.winfo_height()) == (gmt.FULL_CARD_W,
                                                     gmt.GRAPH_H_TEMP)
     ok &= (pcv.winfo_width(), pcv.winfo_height()) == (gmt.FULL_CARD_W,
                                                      gmt.GRAPH_H_PW)
-    ok &= rooty(cv, root) + cv.winfo_height() + gmt.GRAPH_GAP == rooty(pcv, root)
-    ok &= (rooty(pcv, root) + pcv.winfo_height()
+    # watts lead the stack, temperatures close it
+    ok &= rooty(pcv, root) + pcv.winfo_height() + gmt.GRAPH_GAP == rooty(cv, root)
+    ok &= (rooty(cv, root) + cv.winfo_height()
            == rooty(col, root) + col.winfo_height())     # flush with the bottom
     ok &= cv.winfo_width() == pcv.winfo_width()          # one shared x mapping
 

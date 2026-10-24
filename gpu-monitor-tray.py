@@ -644,13 +644,15 @@ FULL_COL_H = 444     # one full-mode column, header and padding excluded
 FULL_H = 492
 
 # Full mode splits its history band into two charts stacked one above the
-# other. Core temp and mem temp are both degrees and share one scale, so they
-# stay together in the upper chart; watts have nothing in common with degrees,
-# so power gets the lower chart and a grid of its own. The band used to be one
-# 170px canvas plus a legend frame outside it; the key now lives inside each
-# chart's own top strip, which is what pays for the second chart without the
-# window growing by a single pixel: 444 - 124 - 90 - (6 + 6) padding = 218
-# left for the text card, which asks for 205.
+# other: watts on top, degrees underneath. Core temp and mem temp are both
+# degrees and share one scale, so they stay together in one chart; watts have
+# nothing in common with degrees, so power gets its own chart and its own
+# grid. The band used to be one 170px canvas plus a legend frame outside it;
+# the key now lives inside each chart's own top strip, which is what pays for
+# the second chart without the window growing by a single pixel: 444 - 124 -
+# 90 - (6 + 6) padding = 218 left for the text card, which asks for 205.
+# Each chart keeps the height its own content needs, so the taller one (two
+# series, four grid lines) now sits at the bottom.
 GRAPH_H_TEMP = 124
 GRAPH_H_PW = 90
 GRAPH_GAP = 6        # dark strip between the two charts: what tells them apart
@@ -1288,17 +1290,18 @@ class MonitorApp:
 
             # Full mode is the only layout that draws history graphs; compact
             # and ultra never get past their own branches above. Two charts
-            # stacked in the space that used to hold one: degrees on top, watts
+            # stacked in the space that used to hold one: watts on top, degrees
             # underneath. No legend frame any more -- the key is drawn inside
             # each chart, which is where the height for the second one comes
             # from. They sit on the same x mapping, so they read as one
-            # timeline cut in two, not as two unrelated plots.
-            cv = tk.Canvas(col, bg=CARD, height=GRAPH_H_TEMP,
-                           highlightthickness=0)
-            cv.pack(fill="x", pady=(6, 0))
+            # timeline cut in two, not as two unrelated plots. The pack order
+            # is the on-screen order, so the power canvas has to come first.
             pcv = tk.Canvas(col, bg=CARD, height=GRAPH_H_PW,
                             highlightthickness=0)
-            pcv.pack(fill="x", pady=(GRAPH_GAP, 0))
+            pcv.pack(fill="x", pady=(6, 0))
+            cv = tk.Canvas(col, bg=CARD, height=GRAPH_H_TEMP,
+                           highlightthickness=0)
+            cv.pack(fill="x", pady=(GRAPH_GAP, 0))
             self.canvases.append(cv)
             self.pw_canvases.append(pcv)
 
@@ -1525,7 +1528,12 @@ class MonitorApp:
         with invented numbers would lie, so the labels keep away in that case.
         """
         w = int(cv.winfo_width() or FULL_CARD_W)
-        h = int(cv.winfo_height() or GRAPH_H_TEMP)
+        # Before the first map Tk reports a 1x1 canvas for this window, and a
+        # 1px height would put the axis numbers off the canvas. The canvas
+        # height is fixed by its own configure(), so the configured value is
+        # the truth whenever the widget has not been laid out yet.
+        h = int(cv.winfo_height() if cv.winfo_ismapped()
+                else cv.cget("height"))
         cv.create_rectangle(0, 0, w - 1, h - 1, outline=LINE)
         if not live:
             return w, h, None
@@ -1548,10 +1556,11 @@ class MonitorApp:
         # numbers printed on the very same grid lines -- so the two units were
         # only told apart by which side of the chart their numbers sat on. Core
         # temp and mem temp are degrees and share one scale, so they stay
-        # together in the upper chart; watts have nothing in common with
-        # degrees and get the lower chart plus a grid of their own. Both charts
-        # use the same x mapping, which is what makes them read as one timeline
-        # cut in two rather than as two unrelated plots.
+        # together in one chart; watts have nothing in common with degrees and
+        # get a chart plus a grid of their own. Power is drawn first and so
+        # sits on top, temperatures underneath. Both charts use the same x
+        # mapping, which is what makes them read as one timeline cut in two
+        # rather than as two unrelated plots.
         cv_t, cv_p = self.canvases[i], self.pw_canvases[i]
         if cv_t is None:
             return  # compact / ultra mode: no graph at all
@@ -1572,10 +1581,13 @@ class MonitorApp:
             mid = (phi + plo) / 2
             plo, phi = max(0, mid - 10), mid + 10
 
-        w_t, _, y_t = self._chart_frame(cv_t, tlo, thi, "°", GRAPH_TEMP,
-                                        4, GRAPH_PAD_B_TOP, bool(temp_all))
+        # pad_b follows the position in the stack, not the unit: the chart that
+        # ends the pair at the bottom pays for the time axis, the one above it
+        # reads straight down to it.
         w_p, h_p, y_p = self._chart_frame(cv_p, plo, phi, "W", PW_COLOR,
-                                          3, GRAPH_PAD_B, bool(pv))
+                                          3, GRAPH_PAD_B_TOP, bool(pv))
+        w_t, h_t, y_t = self._chart_frame(cv_t, tlo, thi, "°", GRAPH_TEMP,
+                                          4, GRAPH_PAD_B, bool(temp_all))
 
         # The key used to be a legend frame hanging under the graph. It now
         # sits inside each chart's own top strip: two charts no longer need two
@@ -1590,12 +1602,13 @@ class MonitorApp:
                          fill=PW_COLOR, font=("Segoe UI", 9), anchor="w")
 
         # One timeline, so the time axis is printed once, at the very bottom of
-        # the pair, and the upper chart simply reads down to it. The oldest
-        # sample is index 0 and the newest is the last one appended, so the
-        # left end is three minutes back and the right end is now.
-        cv_p.create_text(GRAPH_PAD_L, h_p - 5, text="-3 min", fill=DIM,
+        # the pair -- which is now the temperature chart -- and the chart above
+        # it simply reads down to it. The oldest sample is index 0 and the
+        # newest is the last one appended, so the left end is three minutes
+        # back and the right end is now.
+        cv_t.create_text(GRAPH_PAD_L, h_t - 5, text="-3 min", fill=DIM,
                          font=("Segoe UI", 8), anchor="w")
-        cv_p.create_text(w_p - GRAPH_PAD_R, h_p - 5, text="now", fill=DIM,
+        cv_t.create_text(w_t - GRAPH_PAD_R, h_t - 5, text="now", fill=DIM,
                          font=("Segoe UI", 8), anchor="e")
 
         # Close over the width rather than take it as an argument: a helper that

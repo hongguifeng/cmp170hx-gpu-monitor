@@ -221,12 +221,13 @@ GDDR6X（如 RTX 3090）的存温走 NVAPI。主要文件：
 
 ### 完全模式的曲线已拆成上下两张图
 
-- 布局：上图 `GRAPH_H_TEMP=124`（核温 + 存温，共用一个 °C 刻度），下图 `GRAPH_H_PW=90`（功耗，自己的 W 刻度），中间 `GRAPH_GAP=6` 的暗色间隔；两张图共用同一套 x 映射，所以读起来是「同一条时间轴切成两段」而不是两个无关的图。
+- 布局：上图 `GRAPH_H_PW=90`（功耗，自己的 W 刻度），下图 `GRAPH_H_TEMP=124`（核温 + 存温，共用一个 °C 刻度），中间 `GRAPH_GAP=6` 的暗色间隔；两张图共用同一套 x 映射，所以读起来是「同一条时间轴切成两段」而不是两个无关的图。
 - 窗口高度仍是 492（`FULL_H` 没动）：省出来的空间来自图例 —— 原来图例是图外的一个 Frame（21px + 3 pady），现在用 `cv.create_text` 画在每张图自己的顶部条带里（`GRAPH_PAD_T=16`、`GRAPH_KEY_Y=7`），两张图不再各自需要一条说明。
 - 卡片文字区实测需要 205px（name 26 + temp 65 + info 96 + 上下 pady 16 + 边框 2），列高 `FULL_COL_H=444` 减掉两张图和 padding 后给它 218px，**只剩 13px 余量**：以后再往完全模式里塞东西，先量 `card.winfo_reqheight()`，别凭感觉。
-- 像素坐标（相对窗口）：温度图 y=264..388，功耗图 y=394..484，三列 x = 8 / 266 / 528（列宽 250 + 各自 padding）。`shoot-docs.py` 的 BANDS 和 `test-charts.py` 都按这几个数断言，改尺寸必须一起改。
+- 像素坐标（相对窗口）：功耗图 y=264..354，温度图 y=360..484，三列 x = 8 / 266 / 528（列宽 250 + 各自 padding）。`shoot-docs.py` 的 BANDS 和 `test-charts.py` 都按这几个数断言，改尺寸或改上下顺序必须一起改。
+- 上下顺序是 `build_cards` 里两个 canvas 的 **pack 顺序**（先 pack 的在上面），而 `_chart_frame` 的 `pad_b` 跟着**位置**走而不是跟着单位走：排在最下面的那张图负责画 `-3 min` / `now`（`GRAPH_PAD_B=16`），上面那张只留 `GRAPH_PAD_B_TOP=10`。换顺序时三处（pack 顺序、pad_b 实参、时间轴文本画在哪个 canvas）必须一起换，否则时间轴会跑到两张图中间。高度始终跟着内容走（温度图 124 装两条曲线 + 4 条网格线），所以换序之后较高的图在下面。
 - 没数据时只画框、图例和时间轴，不画刻度数字（`_chart_frame(..., live=False)`），免得摆出没人测过的假温度。
-- 验证：`python test-charts.py`（几何 / 裁剪 / 空数据 / 另外两种布局），`python test-colors.py` 现在分开断言两张图的墨色**互斥** —— 温度图里不许有琥珀，功耗图里不许有蓝，这才证明它们真的是两张图。
+- 验证：`python test-charts.py`（几何 / 裁剪 / 空数据 / 另外两种布局），`python test-colors.py` 现在分开断言两张图的墨色**互斥** —— 温度图里不许有琥珀，功耗图里不许有蓝，这才证明它们真的是两张图（`test-charts.py` 第 [2] 步和 `test-colors.py` 的重叠断言都写死了“功耗在上、温度在下”，换序要改这两处）。
 - 重拍 docs：跑完 `python shoot-docs.py`（它验完各条带后存 `shot-live-full.png`）→ `cp shot-live-full.png docs/img/window-full.png`，两者同为 786x492。
 - 坑（已修，别再犯）：`px(j, w)` 被按 `px(w_t, j)` 调用，参数顺序颠倒 → 实际算成 `38 + (index - 52) * 250 / 179`，最旧的 52 个样本被抹到左边刻度数字上（就是「曲线和坐标重叠看不清」），其余样本也只铺到 215px 而不是 250。做法：把宽度闭包进 helper（`span = w_t - GRAPH_PAD_L - GRAPH_PAD_R` 再 `px(j)`），不给参数顺序颠倒的机会。
 - 时间轴方向：`hist` 是 `append`，所以 index 0 是最旧、最后一个才是最新 → 左端 `-3 min`、右端 `now`（这里写反过一次）。窗口没满 180 点之前最新读数还在中间，满 3 分钟才贴到右端，这是按索引铺 x 的必然行为，不是 bug。

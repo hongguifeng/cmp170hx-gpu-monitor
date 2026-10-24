@@ -4,8 +4,8 @@ Every chart has to be drawn in #4f8cff (core temp) / #9cc8ff (mem temp) /
 #e8a23c (power) and must hold no trace of the old per-GPU palette
 (#3ddc84 / #ffb020 / #ff5555 and their pale mem-temp variants). The two charts
 stacked under each card are checked apart from each other: the upper one holds
-the temperatures and nothing amber, the lower one holds the watts and nothing
-blue, which is what proves they really are two separate charts.
+the watts and nothing blue, the lower one holds the temperatures and nothing
+amber, which is what proves they really are two separate charts.
 """
 import ctypes
 import importlib.util
@@ -155,7 +155,7 @@ for i in range(N):
         if exact_old:
             failures.append("card %d %s chart still draws in %s" %
                             (i, kind, sorted(exact_old)))
-        if kind == "temps" and (y + ch > app.pw_canvases[i].winfo_rooty() - rect[1]):
+        if kind == "power" and (y + ch > app.canvases[i].winfo_rooty() - rect[1]):
             failures.append("card %d charts overlap" % i)
 
 img.save("shot-full.png")

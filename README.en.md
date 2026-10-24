@@ -33,8 +33,8 @@ Always-on-top floating window · compact mode (one row per GPU, stays out of the
 ![Compact mode](docs/img/window-compact.png)
 
 Always-on-top floating window · full mode (one card per GPU + two stacked 3-minute charts: the upper
-one carries core temp and memory temp on one shared degree scale, the lower one the power draw on a
-watt scale of its own; every card shares one palette -- blue = core temp, pale blue = memory temp,
+one carries the power draw on a watt scale of its own, the lower one core temp and memory temp on
+one shared degree scale; every card shares one palette -- blue = core temp, pale blue = memory temp,
 dashed amber = power -- so the cards are told apart by the card itself rather than by colour):
 
 ![Full mode](docs/img/window-full.png)

@@ -3,8 +3,8 @@
 Finds the running GPU Monitor window, renders it with PrintWindow (no
 layered-window ghosting), checks that every chart band uses the shared inks and
 that none of the old per-GPU curve colours survives there. Each card now holds
-two charts stacked: the upper one carries the two temperature series, the lower
-one the power draw -- so each band is checked on its own, and the ink that must
+two charts stacked: the upper one carries the power draw, the lower one the two
+temperature series -- so each band is checked on its own, and the ink that must
 not appear there is as important as the ink that must.
 """
 import ctypes
@@ -22,12 +22,12 @@ UNIFIED = {"core blue": "#4f8cff", "mem pale blue": "#9cc8ff",
 OLD_CURVE_INKS = ["#3ddc84", "#ffb020", "#ff5555",
                   "#a8f0c0", "#ffd28a", "#ff9c9c"]
 
-# Where the two charts of each card land in the 492px window: the temperature
-# chart runs 264..388 and the power chart 394..484, both 250px wide, and the
+# Where the two charts of each card land in the 492px window: the power chart
+# runs 264..354 and the temperature chart 360..484, both 250px wide, and the
 # columns start at 8 / 266 / 528 (card width 250 plus its own padding).
 TEMP_X = [8, 266, 528]
-TEMP_BOX = (264, 388)
-PW_BOX = (394, 484)
+PW_BOX = (264, 354)
+TEMP_BOX = (360, 484)
 TEMP_WANT = {"core blue": 20, "mem pale blue": 20}
 PW_WANT = {"power amber": 20}
 # the other unit's ink must stay out of the chart it does not belong to
@@ -81,8 +81,8 @@ src.DeleteDC()
 win32gui.ReleaseDC(hwnd, dc)
 
 # Three fixed columns; the two chart bands of each card sit at the same place.
-BANDS = [(x, TEMP_BOX, "temps", TEMP_WANT, TEMP_OUT) for x in TEMP_X] \
-    + [(x, PW_BOX, "power", PW_WANT, PW_OUT) for x in TEMP_X]
+BANDS = [(x, PW_BOX, "power", PW_WANT, PW_OUT) for x in TEMP_X] \
+    + [(x, TEMP_BOX, "temps", TEMP_WANT, TEMP_OUT) for x in TEMP_X]
 failures = []
 for i, (x, box, kind, want, out) in enumerate(BANDS):
     card = i % len(TEMP_X)
